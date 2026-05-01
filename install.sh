@@ -199,10 +199,6 @@ DAOYI_AGENT_PROFILE=$PROFILE
 EOF
 
 if command -v systemctl >/dev/null 2>&1; then
-  as_root systemctl disable --now daoyi-agent-update.timer >/dev/null 2>&1 || true
-  as_root systemctl disable --now daoyi-agent-update.service >/dev/null 2>&1 || true
-  as_root rm -f /etc/systemd/system/daoyi-agent-update.service /etc/systemd/system/daoyi-agent-update.timer
-
   as_root sh -c "cat > /etc/systemd/system/daoyi-agent.service" <<EOF
 [Unit]
 Description=Daoyi Monitor Agent

@@ -39,6 +39,9 @@ pub const CollectorState = struct {
 pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?*CollectorState) !metrics.ReportMessage {
     var report = metrics.ReportMessage{
         .agent_id = cfg.agent_id,
+        .os = config.targetOsName(),
+        .arch = config.targetArchName(),
+        .distro = cfg.distro,
         .collected_at_unix = std.time.timestamp(),
         .cpu_percent = 0,
         .uptime_seconds = 0,

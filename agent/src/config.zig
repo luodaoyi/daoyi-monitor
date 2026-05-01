@@ -22,6 +22,7 @@ pub const Config = struct {
     token: []const u8,
     agent_id: []const u8,
     hostname: []const u8,
+    distro: []const u8,
     interval_seconds: u32,
     profile: BuildProfile,
     features: FeatureSet,
@@ -33,6 +34,7 @@ pub const Config = struct {
             .token = try envOrDefault(allocator, "DAOYI_AGENT_TOKEN", ""),
             .agent_id = try envOrDefault(allocator, "DAOYI_AGENT_ID", "demo-agent"),
             .hostname = try detectHostname(allocator),
+            .distro = try detectDistro(allocator),
             .interval_seconds = try intervalFromEnv("DAOYI_AGENT_INTERVAL_SEC", 3),
             .profile = profile,
             .features = featuresForProfile(profile),
@@ -44,6 +46,7 @@ pub const Config = struct {
         self.allocator.free(self.token);
         self.allocator.free(self.agent_id);
         self.allocator.free(self.hostname);
+        self.allocator.free(self.distro);
     }
 };
 
@@ -112,6 +115,43 @@ fn detectHostname(allocator: std.mem.Allocator) ![]const u8 {
     }
 
     return allocator.dupe(u8, "unknown-host");
+}
+
+fn detectDistro(allocator: std.mem.Allocator) ![]const u8 {
+    if (builtin.os.tag != .linux) {
+        return allocator.dupe(u8, targetOsName());
+    }
+
+    const raw = readSmallAbsoluteFile(allocator, "/etc/os-release") catch
+        readSmallAbsoluteFile(allocator, "/usr/lib/os-release") catch
+        return allocator.dupe(u8, "linux");
+    defer allocator.free(raw);
+
+    if (osReleaseValue(raw, "PRETTY_NAME")) |value| return allocator.dupe(u8, value);
+    if (osReleaseValue(raw, "NAME")) |value| return allocator.dupe(u8, value);
+    if (osReleaseValue(raw, "ID")) |value| return allocator.dupe(u8, value);
+    return allocator.dupe(u8, "linux");
+}
+
+fn readSmallAbsoluteFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(allocator, 4096);
+}
+
+fn osReleaseValue(raw: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (line.len <= key.len or !std.mem.startsWith(u8, line, key) or line[key.len] != '=') {
+            continue;
+        }
+        var value = std.mem.trim(u8, line[key.len + 1 ..], " \t\r\n");
+        if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
+            value = value[1 .. value.len - 1];
+        }
+        return value;
+    }
+    return null;
 }
 
 fn intervalFromEnv(key: []const u8, fallback: u32) !u32 {

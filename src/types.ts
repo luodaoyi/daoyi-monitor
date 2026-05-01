@@ -53,4 +53,8 @@ export interface HubSocketAttachment {
   connectedAt: string;
   agentId?: string;
   adminId?: string;
+  countryCode?: string;
+  region?: string;
+  city?: string;
+  colo?: string;
 }

@@ -12,6 +12,8 @@ pub fn writeHello(writer: anytype, hello: metrics.HelloMessage) !void {
     try writeNamedString(writer, "os", hello.os);
     try writer.writeAll(",");
     try writeNamedString(writer, "arch", hello.arch);
+    try writer.writeAll(",");
+    try writeNamedString(writer, "distro", hello.distro);
     try writer.writeAll("},\"capabilities\":{");
     try writeNamedBool(writer, "loadavg", hello.capabilities.loadavg);
     try writer.writeAll(",");
@@ -32,6 +34,12 @@ pub fn writeReport(writer: anytype, report: metrics.ReportMessage) !void {
     try writeStringField(writer, "agent_id", report.agent_id);
     try writeI64Field(writer, "time", report.collected_at_unix);
     try writer.writeAll(",\"metrics\":{");
+    try writeNamedString(writer, "os", report.os);
+    try writer.writeAll(",");
+    try writeNamedString(writer, "arch", report.arch);
+    try writer.writeAll(",");
+    try writeNamedString(writer, "distro", report.distro);
+    try writer.writeAll(",");
     try writeNamedF64(writer, "cpu", report.cpu_percent);
     try writer.writeAll(",");
     try writeNamedU64(writer, "uptime_sec", report.uptime_seconds);
@@ -120,6 +128,7 @@ test "hello json is stable" {
         .hostname = "host-1",
         .os = "linux",
         .arch = "x86_64",
+        .distro = "Debian GNU/Linux 12",
         .version = "0.1.0",
         .profile = "full",
         .interval_seconds = 3,
@@ -138,7 +147,7 @@ test "hello json is stable" {
     try writeHello(stream.writer(), hello);
 
     try std.testing.expectEqualStrings(
-        "{\"type\":\"hello\",\"agent_id\":\"agent-1\",\"hostname\":\"host-1\",\"version\":\"0.1.0\",\"profile\":\"full\",\"interval_sec\":3,\"platform\":{\"os\":\"linux\",\"arch\":\"x86_64\"},\"capabilities\":{\"loadavg\":true,\"swap\":true,\"process_count\":true,\"websocket\":false,\"tls\":true,\"self_update\":true}}",
+        "{\"type\":\"hello\",\"agent_id\":\"agent-1\",\"hostname\":\"host-1\",\"version\":\"0.1.0\",\"profile\":\"full\",\"interval_sec\":3,\"platform\":{\"os\":\"linux\",\"arch\":\"x86_64\",\"distro\":\"Debian GNU/Linux 12\"},\"capabilities\":{\"loadavg\":true,\"swap\":true,\"process_count\":true,\"websocket\":false,\"tls\":true,\"self_update\":true}}",
         stream.getWritten(),
     );
 }

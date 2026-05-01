@@ -18,7 +18,7 @@ pub fn main() !void {
 
     const hello = metrics.buildHello(&cfg, build_options.version);
 
-    var hello_buffer: [1024]u8 = undefined;
+    var hello_buffer: [1536]u8 = undefined;
     const hello_payload = try encodeHello(&hello_buffer, hello);
     var collector_state = linux.CollectorState{};
 
@@ -30,7 +30,7 @@ pub fn main() !void {
         try client.sendText(hello_payload);
         while (true) {
             const report = try linux.collect(allocator, &cfg, &collector_state);
-            var report_buffer: [1024]u8 = undefined;
+            var report_buffer: [2048]u8 = undefined;
             const report_payload = try encodeReport(&report_buffer, report);
             try client.sendText(report_payload);
             std.Thread.sleep(@as(u64, cfg.interval_seconds) * std.time.ns_per_s);
@@ -39,7 +39,7 @@ pub fn main() !void {
     }
 
     const report = try linux.collect(allocator, &cfg, &collector_state);
-    var report_buffer: [1024]u8 = undefined;
+    var report_buffer: [2048]u8 = undefined;
     const report_payload = try encodeReport(&report_buffer, report);
 
     var stdout = std.fs.File.stdout().deprecatedWriter();

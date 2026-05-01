@@ -5,6 +5,7 @@ pub const HelloMessage = struct {
     hostname: []const u8,
     os: []const u8,
     arch: []const u8,
+    distro: []const u8,
     version: []const u8,
     profile: []const u8,
     interval_seconds: u32,
@@ -13,6 +14,9 @@ pub const HelloMessage = struct {
 
 pub const ReportMessage = struct {
     agent_id: []const u8,
+    os: []const u8,
+    arch: []const u8,
+    distro: []const u8,
     collected_at_unix: i64,
     cpu_percent: f64,
     uptime_seconds: u64,
@@ -36,6 +40,7 @@ pub fn buildHello(cfg: *const config.Config, version: []const u8) HelloMessage {
         .hostname = cfg.hostname,
         .os = config.targetOsName(),
         .arch = config.targetArchName(),
+        .distro = cfg.distro,
         .version = version,
         .profile = @tagName(cfg.profile),
         .interval_seconds = cfg.interval_seconds,

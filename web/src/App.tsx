@@ -574,6 +574,7 @@ function NodeCard({ agent }: { agent: AgentRecord }) {
         </Flex>
         <Separator size="4" />
         <InfoRow label="OS" value={osText(agent)} />
+        <InfoRow label="地区" value={locationText(agent)} />
         <UsageBar label="CPU" value={cpuPercent(agent)} />
         <UsageBar label="内存" value={memPct} hint={`${formatMetricBytes(agent, MEMORY_USED_KEYS)} / ${formatMetricBytes(agent, MEMORY_TOTAL_KEYS)}`} />
         <UsageBar label="磁盘" value={diskPct} hint={`${formatMetricBytes(agent, ["disk_used", "disk_usage"])} / ${formatMetricBytes(agent, ["disk_total"])}`} />
@@ -602,7 +603,7 @@ function NodeTable({ agents }: { agents: AgentRecord[] }) {
         <tbody>
           {agents.map((agent) => (
             <tr key={agent.id} className="border-t border-[var(--gray-4)] hover:bg-[var(--accent-2)]">
-              <td className="p-3"><Text weight="medium">{agent.name}</Text><Text as="div" size="1" color="gray">{tagLine(agent)}</Text></td>
+              <td className="p-3"><Text weight="medium">{flagForAgent(agent)} {agent.name}</Text><Text as="div" size="1" color="gray">{locationText(agent)} · {osText(agent)}</Text></td>
               <td className="p-3"><Badge color={agent.online ? "green" : "red"} variant="soft">{agent.online ? "在线" : "离线"}</Badge></td>
               <td className="p-3">{formatPercent(cpuPercent(agent))}</td>
               <td className="p-3">{formatPercent(memoryPercent(agent))}</td>
@@ -902,7 +903,7 @@ function readStorage<T extends string>(key: string, fallback: T): T {
 function matchesSearch(agent: AgentRecord, search: string) {
   const term = search.trim().toLowerCase();
   if (!term) return true;
-  return [agent.name, agent.group_name, agent.tags, agent.public_remark, osText(agent), agent.online ? "在线 online" : "离线 offline"]
+  return [agent.name, agent.group_name, agent.tags, agent.public_remark, osText(agent), locationText(agent), agent.online ? "在线 online" : "离线 offline"]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(term));
 }
@@ -1073,15 +1074,33 @@ function formatUptime(agent: AgentRecord) {
 
 function osText(agent: AgentRecord) {
   const os = readStringMetricAny(agent, ["os"]) ?? tagOs(agent) ?? "-";
+  const distro = readStringMetricAny(agent, ["distro", "distribution", "os_name"]);
   const arch = readStringMetricAny(agent, ["arch"]) ?? tagArch(agent) ?? "-";
-  return `${os} / ${arch}`;
+  const system = distro && distro.toLowerCase() !== os.toLowerCase() ? distro : os;
+  return `${system} / ${arch}`;
 }
 
 function tagLine(agent: AgentRecord) { return [agent.group_name ?? "default", agent.tags].filter(Boolean).join(" / "); }
 function tagOs(agent: AgentRecord) { return splitTags(agent.tags).find((tag) => ["linux", "freebsd", "darwin", "macos", "windows"].includes(tag.toLowerCase())) ?? null; }
 function tagArch(agent: AgentRecord) { return splitTags(agent.tags).find((tag) => /x86|amd64|arm|aarch|mips|riscv/i.test(tag)) ?? null; }
 function splitTags(value: string | null) { return value?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? []; }
-function flagForAgent(agent: AgentRecord) { return splitTags(agent.tags).find((tag) => /^[A-Z]{2}$/i.test(tag)) ? "🏳️" : "🌐"; }
+function countryCode(agent: AgentRecord) {
+  const code = readStringMetricAny(agent, ["country_code", "country", "cf_country"]) ?? splitTags(agent.tags).find((tag) => /^[A-Z]{2}$/i.test(tag));
+  return code && /^[A-Z]{2}$/i.test(code) ? code.toUpperCase() : null;
+}
+function locationText(agent: AgentRecord) {
+  const code = countryCode(agent);
+  const city = readStringMetricAny(agent, ["city"]);
+  const region = readStringMetricAny(agent, ["region", "region_code"]);
+  const colo = readStringMetricAny(agent, ["colo", "datacenter"]);
+  const place = [city, region].filter((value, index, items): value is string => Boolean(value) && items.indexOf(value) === index).join(" / ");
+  return [code, place, colo].filter(Boolean).join(" · ") || "-";
+}
+function flagForAgent(agent: AgentRecord) {
+  const code = countryCode(agent);
+  if (!code) return "🌐";
+  return [...code].map((char) => String.fromCodePoint(0x1f1e6 + char.charCodeAt(0) - 65)).join("");
+}
 function buildInstallCommand(token: string) {
   const origin = window.location.origin;
   return `curl -fsSL ${origin}/install.sh | sh -s -- --endpoint '${origin}' --token '${token.replaceAll("'", "'\"'\"'")}' --profile full --interval 3 --installer-url '${origin}/install.sh'`;

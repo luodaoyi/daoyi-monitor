@@ -138,11 +138,13 @@ export class Hub {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     const socket = server as SocketWithAttachment;
+    const geo = geoFromRequest(request);
     const attachment: HubSocketAttachment = {
       role,
       connectedAt: new Date().toISOString(),
       agentId: role === "agent" ? identity.id : undefined,
       adminId: role === "admin" ? identity.id : undefined,
+      ...geo,
     };
 
     this.state.acceptWebSocket(server, [role]);
@@ -190,7 +192,8 @@ export class Hub {
       const now = Math.floor(Date.now() / 1000);
       const agentId = attachment.agentId;
       if (!agentId) return;
-      const latest = snapshotFromAgentMessage(agentId, payload, now);
+      const enriched = enrichAgentPayload(payload, attachment);
+      const latest = snapshotFromAgentMessage(agentId, enriched, now);
       this.latestByAgent.set(agentId, latest);
       this.broadcastToAdmins({
         type: "latest",
@@ -204,9 +207,10 @@ export class Hub {
       const now = Math.floor(Date.now() / 1000);
       const agentId = attachment.agentId;
       if (!agentId) return;
-      const latest = snapshotFromAgentMessage(agentId, payload, now);
+      const enriched = enrichAgentPayload(payload, attachment);
+      const latest = snapshotFromAgentMessage(agentId, enriched, now);
       this.latestByAgent.set(agentId, latest);
-      await this.persistAgentSampleIfNeeded(agentId, now, payload);
+      await this.persistAgentSampleIfNeeded(agentId, now, enriched);
       this.broadcastToAdmins({
         type: "latest",
         data: latest,
@@ -458,6 +462,53 @@ function extractMetrics(payload: unknown): Record<string, unknown> | undefined {
   if (!isRecord(payload)) return undefined;
   const nested = payload.metrics;
   return isRecord(nested) ? nested : payload;
+}
+
+function enrichAgentPayload(
+  payload: HubInboundMessage,
+  attachment: HubSocketAttachment,
+): HubInboundMessage {
+  if (!isRecord(payload)) return payload;
+  const metrics = isRecord(payload.metrics) ? { ...payload.metrics } : {};
+  const platform = isRecord(payload.platform) ? payload.platform : null;
+
+  if (platform) {
+    metrics.platform = platform;
+    for (const key of ["os", "arch", "distro"]) {
+      if (metrics[key] === undefined && typeof platform[key] === "string") {
+        metrics[key] = platform[key];
+      }
+    }
+  }
+
+  if (attachment.countryCode) metrics.country_code = attachment.countryCode;
+  if (attachment.region) metrics.region = attachment.region;
+  if (attachment.city) metrics.city = attachment.city;
+  if (attachment.colo) metrics.colo = attachment.colo;
+
+  return { ...payload, metrics };
+}
+
+function geoFromRequest(request: Request): Partial<HubSocketAttachment> {
+  const cf = request.cf as Record<string, unknown> | undefined;
+  if (!cf) return {};
+  const countryCode = normalizeCountryCode(cf.country);
+  return {
+    ...(countryCode ? { countryCode } : {}),
+    ...optionalCfString("region", cf.region),
+    ...optionalCfString("city", cf.city),
+    ...optionalCfString("colo", cf.colo),
+  };
+}
+
+function optionalCfString(key: "region" | "city" | "colo", value: unknown): Record<string, string> {
+  return typeof value === "string" && value.trim() ? { [key]: value.trim() } : {};
+}
+
+function normalizeCountryCode(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const code = value.trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(code) ? code : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -35,6 +35,10 @@
   let notice: Notice | null = null;
   let ws: WebSocketController | undefined;
   let publicRefreshTimer: number | undefined;
+  let clockTimer: number | undefined;
+  let currentTime = new Date();
+  let publicSearch = "";
+  let publicViewMode: "grid" | "table" = "grid";
 
   let initUsername = "";
   let initPassword = "";
@@ -75,6 +79,13 @@
   $: sortedVisibleAgents = [...visibleAgents].sort(compareAgentsForMonitor);
   $: previewAgents = sortedVisibleAgents.slice(0, 8);
   $: groupCount = new Set(visibleAgents.map((item) => item.group_name ?? "default")).size;
+  $: publicAgents = sortedVisibleAgents.filter(matchesPublicSearch);
+  $: publicOnlineCount = publicAgents.filter((item) => item.online).length;
+  $: publicGroupCount = new Set(publicAgents.map(publicGroupLabel)).size;
+  $: publicUploadTotal = sumMetricAny(publicAgents, ["network_total_up", "net_total_up", "total_upload", "tx_total"]);
+  $: publicDownloadTotal = sumMetricAny(publicAgents, ["network_total_down", "net_total_down", "total_download", "rx_total"]);
+  $: publicUploadSpeed = sumMetricAny(publicAgents, ["network_up", "net_up", "upload_bps", "tx_bps"]);
+  $: publicDownloadSpeed = sumMetricAny(publicAgents, ["network_down", "net_down", "download_bps", "rx_bps"]);
 
   onMount(() => {
     syncRouteFromLocation();
@@ -84,12 +95,18 @@
     };
 
     window.addEventListener("popstate", handlePopState);
+    clockTimer = window.setInterval(() => {
+      currentTime = new Date();
+    }, 1000);
     void bootstrap();
 
     return () => {
       window.removeEventListener("popstate", handlePopState);
       closeRealtime();
       stopPublicRefresh();
+      if (clockTimer !== undefined) {
+        window.clearInterval(clockTimer);
+      }
     };
   });
 
@@ -596,6 +613,22 @@
     return null;
   }
 
+  function readStringMetricAny(agent: AgentRecord, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = agent.metrics?.[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+    const platform = agent.metrics?.platform;
+    if (typeof platform === "object" && platform !== null) {
+      const record = platform as Record<string, unknown>;
+      for (const key of keys) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) return value;
+      }
+    }
+    return null;
+  }
+
   function ratioMetric(agent: AgentRecord, usedKeys: string[], totalKeys: string[]): number | null {
     const used = readMetricAny(agent, usedKeys);
     const total = readMetricAny(agent, totalKeys);
@@ -615,12 +648,37 @@
     return ratioMetric(agent, ["disk_used", "disk_usage"], ["disk_total"]);
   }
 
+  function diskWarn(agent: AgentRecord): boolean {
+    const value = diskPercent(agent);
+    return value !== null && value >= 70;
+  }
+
   function uploadSpeed(agent: AgentRecord): number | null {
     return readMetricAny(agent, ["network_up", "net_up", "upload_bps", "tx_bps"]);
   }
 
   function downloadSpeed(agent: AgentRecord): number | null {
     return readMetricAny(agent, ["network_down", "net_down", "download_bps", "rx_bps"]);
+  }
+
+  function totalUpload(agent: AgentRecord): number | null {
+    return readMetricAny(agent, ["network_total_up", "net_total_up", "total_upload", "tx_total"]);
+  }
+
+  function totalDownload(agent: AgentRecord): number | null {
+    return readMetricAny(agent, ["network_total_down", "net_total_down", "total_download", "rx_total"]);
+  }
+
+  function sumMetricAny(items: AgentRecord[], keys: string[]): number | null {
+    let total = 0;
+    let count = 0;
+    for (const item of items) {
+      const value = readMetricAny(item, keys);
+      if (value === null) continue;
+      total += value;
+      count += 1;
+    }
+    return count > 0 ? total : null;
   }
 
   function formatPercent(value: number | null): string {
@@ -657,6 +715,10 @@
     return new Date(toMillis(value)).toLocaleString("zh-CN");
   }
 
+  function formatClock(value: Date): string {
+    return value.toLocaleTimeString("zh-CN", { hour12: false });
+  }
+
   function formatRelativeAge(value: number | null): string {
     if (!value) return "等待首报";
 
@@ -679,6 +741,56 @@
     if (days > 0) return `${days} 天 ${hours} 小时`;
     if (hours > 0) return `${hours} 小时 ${minutes} 分`;
     return `${minutes} 分`;
+  }
+
+  function osName(agent: AgentRecord): string {
+    const value = readStringMetricAny(agent, ["os", "os_name", "platform_os"]);
+    if (!value) return "-";
+    const lower = value.toLowerCase();
+    if (lower.includes("debian")) return "Debian";
+    if (lower.includes("ubuntu")) return "Ubuntu";
+    if (lower.includes("centos")) return "CentOS";
+    if (lower.includes("openwrt")) return "OpenWrt";
+    if (lower.includes("freebsd")) return "FreeBSD";
+    if (lower.includes("darwin") || lower.includes("mac")) return "macOS";
+    if (lower.includes("linux")) return "Linux";
+    return value;
+  }
+
+  function archName(agent: AgentRecord): string {
+    return readStringMetricAny(agent, ["arch", "architecture", "platform_arch"]) ?? "-";
+  }
+
+  function publicGroupLabel(agent: AgentRecord): string {
+    return agent.group_name ?? "default";
+  }
+
+  function flagForAgent(agent: AgentRecord): string {
+    const text = `${agent.group_name ?? ""} ${agent.tags ?? ""} ${agent.public_remark ?? ""}`.toLowerCase();
+    if (text.includes("cn") || text.includes("china") || text.includes("中国")) return "🇨🇳";
+    if (text.includes("hk") || text.includes("香港")) return "🇭🇰";
+    if (text.includes("jp") || text.includes("japan") || text.includes("日本")) return "🇯🇵";
+    if (text.includes("kr") || text.includes("korea") || text.includes("韩国")) return "🇰🇷";
+    if (text.includes("sg") || text.includes("singapore") || text.includes("新加坡")) return "🇸🇬";
+    if (text.includes("us") || text.includes("usa") || text.includes("美国")) return "🇺🇸";
+    return "🌐";
+  }
+
+  function matchesPublicSearch(agent: AgentRecord): boolean {
+    const keyword = publicSearch.trim().toLowerCase();
+    if (!keyword) return true;
+    const haystack = [
+      agent.name,
+      agent.group_name,
+      agent.tags,
+      agent.public_remark,
+      osName(agent),
+      archName(agent)
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(keyword);
   }
 
   function formatTokenPreview(preview: string): string {
@@ -734,16 +846,15 @@
   <main class="app-shell public-shell">
     <header class="topbar public-topbar">
       <div class="brand-line">
-        <div class="brand-mark">D</div>
         <div>
           <strong>Daoyi Monitor</strong>
-          <span>Public monitor</span>
+          <span>Komari Monitor</span>
         </div>
       </div>
-      <nav class="top-nav" aria-label="前台导航">
-        <button class="active">监控</button>
-      </nav>
       <div class="top-actions">
+        <button class="icon-btn" title="刷新" disabled={$agentsLoading} on:click={() => void loadPublicAgents()}>
+          {$agentsLoading ? "…" : "↻"}
+        </button>
         <button class="btn soft" on:click={() => navigate("/admin")}>后台管理</button>
       </div>
     </header>
@@ -753,94 +864,138 @@
         <div class={`notice ${notice.kind}`}>{notice.message}</div>
       {/if}
 
-      <section class="summary-card">
-        <div class="summary-head">
-          <div>
-            <span class="section-kicker">Overview</span>
-            <h1>服务器状态</h1>
-          </div>
-          <button class="icon-btn" title="刷新" disabled={$agentsLoading} on:click={() => void loadPublicAgents()}>
-            {$agentsLoading ? "…" : "↻"}
-          </button>
-        </div>
+      <section class="summary-card public-summary">
         <div class="status-grid">
           <article>
+            <span>当前时间</span>
+            <strong>{formatClock(currentTime)}</strong>
+          </article>
+          <article>
             <span>当前在线</span>
-            <strong>{onlineCount} / {$agents.length}</strong>
+            <strong>{publicOnlineCount} / {publicAgents.length}</strong>
           </article>
           <article>
-            <span>节点分组</span>
-            <strong>{groupCount}</strong>
+            <span>点亮分组</span>
+            <strong>{publicGroupCount}</strong>
           </article>
           <article>
-            <span>平均 CPU</span>
-            <strong>{formatPercent(cpuAverage)}</strong>
+            <span>流量概览</span>
+            <strong>↑ {formatBytes(publicUploadTotal)} / ↓ {formatBytes(publicDownloadTotal)}</strong>
           </article>
           <article>
-            <span>平均内存</span>
-            <strong>{formatPercent(memoryAverage)}</strong>
-          </article>
-          <article>
-            <span>最近上报</span>
-            <strong>{formatRelativeAge(lastReportAt)}</strong>
+            <span>网络速率</span>
+            <strong>↑ {formatSpeed(publicUploadSpeed)} / ↓ {formatSpeed(publicDownloadSpeed)}</strong>
           </article>
         </div>
       </section>
 
-      <section class="node-grid">
-        {#if previewAgents.length === 0}
+      <section class="public-toolbar">
+        <label class="search-box">
+          <span class="search-icon" aria-hidden="true"></span>
+          <input bind:value={publicSearch} name="public_search" placeholder="搜索节点名称、分组、系统..." />
+        </label>
+        <div class="display-switch">
+          <span>显示模式</span>
+          <button class:active={publicViewMode === "grid"} title="卡片" on:click={() => (publicViewMode = "grid")}>▦</button>
+          <button class:active={publicViewMode === "table"} title="表格" on:click={() => (publicViewMode = "table")}>☷</button>
+        </div>
+      </section>
+
+      <p class="public-count">共 {publicAgents.length} 个服务器，{publicOnlineCount} 个在线</p>
+
+      {#if publicViewMode === "grid"}
+        <section class="node-grid public-node-grid">
+          {#if publicAgents.length === 0}
+            <div class="empty-state">
+              <h2>暂无公开节点</h2>
+              <p>后台创建并启用节点后，前台会自动显示非隐藏节点。</p>
+            </div>
+          {:else}
+            {#each publicAgents as agent}
+              <article class="node-card public-node-card">
+                <div class="node-head">
+                  <div class="node-title">
+                    <span class="flag-mark">{flagForAgent(agent)}</span>
+                    <div>
+                      <h2>{agent.name}</h2>
+                    </div>
+                  </div>
+                  <span class:online={agent.online} class="badge">{agent.online ? "在线" : "离线"}</span>
+                </div>
+
+                <div class="public-os-row">
+                  <span>OS</span>
+                  <strong>{osName(agent)} / {archName(agent)}</strong>
+                </div>
+
+                <div class="usage-list public-usage">
+                  <div class="usage-row">
+                    <span>CPU</span>
+                    <strong>{formatPercent(cpuPercent(agent))}</strong>
+                    <div class="usage-bar"><i style={`width: ${percentWidth(cpuPercent(agent))}`}></i></div>
+                  </div>
+                  <div class="usage-row">
+                    <span>内存</span>
+                    <strong>{formatPercent(memoryPercent(agent))}</strong>
+                    <div class="usage-bar"><i style={`width: ${percentWidth(memoryPercent(agent))}`}></i></div>
+                    <small>{formatMetricBytes(agent, ["mem_used", "memory_used"])} / {formatMetricBytes(agent, ["mem_total", "memory_total"])}</small>
+                  </div>
+                  <div class="usage-row">
+                    <span>磁盘</span>
+                    <strong>{formatPercent(diskPercent(agent))}</strong>
+                    <div class="usage-bar"><i class:warn={diskWarn(agent)} style={`width: ${percentWidth(diskPercent(agent))}`}></i></div>
+                    <small>{formatMetricBytes(agent, ["disk_used", "disk_usage"])} / {formatMetricBytes(agent, ["disk_total"])}</small>
+                  </div>
+                </div>
+
+                <dl class="node-meta public-node-meta">
+                  <div><dt>总流量</dt><dd>↑ {formatBytes(totalUpload(agent))} ↓ {formatBytes(totalDownload(agent))}</dd></div>
+                  <div><dt>网络</dt><dd>↑ {formatSpeed(uploadSpeed(agent))} ↓ {formatSpeed(downloadSpeed(agent))}</dd></div>
+                  <div><dt>运行时间</dt><dd>{formatUptime(agent)}</dd></div>
+                </dl>
+              </article>
+            {/each}
+          {/if}
+        </section>
+      {:else}
+        <section class="table-card public-table-card">
+          {#if publicAgents.length === 0}
           <div class="empty-state">
             <h2>暂无公开节点</h2>
             <p>后台创建并启用节点后，前台会自动显示非隐藏节点。</p>
           </div>
-        {:else}
-          {#each previewAgents as agent}
-            <article class="node-card">
-              <div class="node-head">
-                <div class="node-title">
-                  <span class="node-dot" class:online={agent.online}></span>
-                  <div>
-                    <h2>{agent.name}</h2>
-                    <p>{agent.group_name ?? "default"}</p>
-                  </div>
-                </div>
-                <span class:online={agent.online} class="badge">{agent.online ? "Online" : "Offline"}</span>
-              </div>
-
-              <div class="tag-row">
-                {#each splitTags(agent.tags) as tag}
-                  <span>{tag}</span>
-                {/each}
-              </div>
-
-              <div class="usage-list">
-                <div class="usage-row">
-                  <span>CPU</span>
-                  <div class="usage-bar"><i style={`width: ${percentWidth(cpuPercent(agent))}`}></i></div>
-                  <strong>{formatPercent(cpuPercent(agent))}</strong>
-                </div>
-                <div class="usage-row">
-                  <span>RAM</span>
-                  <div class="usage-bar"><i style={`width: ${percentWidth(memoryPercent(agent))}`}></i></div>
-                  <strong>{formatPercent(memoryPercent(agent))}</strong>
-                </div>
-                <div class="usage-row">
-                  <span>Disk</span>
-                  <div class="usage-bar"><i style={`width: ${percentWidth(diskPercent(agent))}`}></i></div>
-                  <strong>{formatPercent(diskPercent(agent))}</strong>
-                </div>
-              </div>
-
-              <dl class="node-meta">
-                <div><dt>内存</dt><dd>{formatMetricBytes(agent, ["mem_used", "memory_used"])} / {formatMetricBytes(agent, ["mem_total", "memory_total"])}</dd></div>
-                <div><dt>网络</dt><dd>↑ {formatSpeed(uploadSpeed(agent))} ↓ {formatSpeed(downloadSpeed(agent))}</dd></div>
-                <div><dt>运行</dt><dd>{formatUptime(agent)}</dd></div>
-                <div><dt>更新</dt><dd>{formatRelativeAge(agent.last_seen)}</dd></div>
-              </dl>
-            </article>
-          {/each}
-        {/if}
-      </section>
+          {:else}
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>OS</th>
+                    <th>状态</th>
+                    <th>CPU</th>
+                    <th>内存</th>
+                    <th>网络</th>
+                    <th>运行时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each publicAgents as agent}
+                    <tr>
+                      <td><strong>{flagForAgent(agent)} {agent.name}</strong></td>
+                      <td>{osName(agent)} / {archName(agent)}</td>
+                      <td><span class:online={agent.online} class="badge">{agent.online ? "在线" : "离线"}</span></td>
+                      <td>{formatPercent(cpuPercent(agent))}</td>
+                      <td>{formatPercent(memoryPercent(agent))}</td>
+                      <td>↑ {formatSpeed(uploadSpeed(agent))}<br />↓ {formatSpeed(downloadSpeed(agent))}</td>
+                      <td>{formatUptime(agent)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </section>
+      {/if}
     </section>
   </main>
 {:else if route === "/admin/init"}

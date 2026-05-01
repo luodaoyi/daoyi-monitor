@@ -58,7 +58,7 @@ import type {
   User
 } from "./types";
 
-type Route = "/" | "/instance" | "/admin" | "/admin/agents" | "/admin/settings" | "/admin/init" | "/admin/login";
+type Route = "/" | "/instance" | "/admin" | "/admin/agents" | "/admin/settings" | "/admin/sign-on" | "/admin/init" | "/admin/login";
 type Notice = { kind: "error" | "success"; message: string };
 type RevealedSecret = { title: string; name: string; token: string };
 type ViewMode = "grid" | "table";
@@ -367,7 +367,10 @@ export default function App() {
         ...notificationForm,
         webhook_url: emptyToNull(notificationForm.webhook_url ?? ""),
         telegram_bot_token: emptyToNull(notificationForm.telegram_bot_token ?? ""),
-        telegram_chat_id: emptyToNull(notificationForm.telegram_chat_id ?? "")
+        telegram_chat_id: emptyToNull(notificationForm.telegram_chat_id ?? ""),
+        serverchan_sendkey: emptyToNull(notificationForm.serverchan_sendkey ?? ""),
+        pushplus_token: emptyToNull(notificationForm.pushplus_token ?? ""),
+        bark_url: emptyToNull(notificationForm.bark_url ?? "")
       });
       setNotificationForm(settings);
       setNotice({ kind: "success", message: "通知设置已保存。" });
@@ -477,7 +480,7 @@ export default function App() {
   ) : route === "/admin/init" ? (
     <InitPage loading={loading} onSubmit={(username, password, confirm) => void submitInit(username, password, confirm)} />
   ) : route === "/admin/login" ? (
-    <LoginPage loading={loading} onSubmit={(username, password) => void submitLogin(username, password)} />
+    <LoginPage site={siteSettings} loading={loading} onSubmit={(username, password) => void submitLogin(username, password)} />
   ) : (
     <AdminShell route={route} navigate={navigate} user={user} onLogout={() => void submitLogout()}>
       {notice && <NoticeBanner notice={notice} />}
@@ -541,6 +544,9 @@ export default function App() {
           saveNotifications={() => void saveNotifications()}
           testNotifications={() => void testNotifications()}
         />
+      )}
+      {route === "/admin/sign-on" && (
+        <SignOnPage site={siteSettings} setSite={setSiteSettings} saving={siteSaving} save={() => void saveSiteSettings()} />
       )}
       <DeleteDialog
         agent={deleteTarget}
@@ -885,7 +891,8 @@ function AdminShell({ route, navigate, user, onLogout, children }: { route: Rout
   const items = [
     { route: "/admin" as Route, label: "总览", icon: Activity },
     { route: "/admin/agents" as Route, label: "客户端", icon: Monitor },
-    { route: "/admin/settings" as Route, label: "设置", icon: Settings }
+    { route: "/admin/settings" as Route, label: "设置", icon: Settings },
+    { route: "/admin/sign-on" as Route, label: "登录/API", icon: KeyRound }
   ];
   return (
     <div className="grid h-screen w-screen grid-rows-[auto_1fr] overflow-auto bg-[var(--accent-1)] md:grid-cols-[auto_1fr]">
@@ -1107,11 +1114,20 @@ function SettingsPage(props: {
           <Field label="默认上报间隔(秒)"><TextField.Root type="number" min="1" max="300" value={String(props.site.agent_interval_sec)} onChange={(event) => props.setSite((item) => ({ ...item, agent_interval_sec: Number(event.target.value) || 3 }))} /></Field>
           <Field label="更新通道"><TextField.Root value={props.site.agent_channel} onChange={(event) => props.setSite((item) => ({ ...item, agent_channel: event.target.value }))} /></Field>
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-1">
           <Field label="安装目录"><TextField.Root value={props.site.agent_install_dir} onChange={(event) => props.setSite((item) => ({ ...item, agent_install_dir: event.target.value }))} /></Field>
-          <Field label="配置文件"><TextField.Root value={props.site.agent_config_file} onChange={(event) => props.setSite((item) => ({ ...item, agent_config_file: event.target.value }))} /></Field>
         </div>
-        <Text as="p" size="2" color="gray">Linux systemd 安装时，配置写入该 env 文件，service 使用 EnvironmentFile 读取。</Text>
+        <Text as="p" size="2" color="gray">Linux systemd 安装时，配置直接写入 ExecStart 命令行参数，不再生成独立 env 文件。</Text>
+      </Card>
+
+      <Card className="space-y-4">
+        <Flex justify="between" align="center" gap="3" wrap="wrap">
+          <div><Text weight="bold">自动发现与 GeoIP</Text><Text as="div" size="2" color="gray">Cloudflare 部署优先使用请求头里的国家、地区和 colo，不做 MMDB。</Text></div>
+          <Button disabled={props.siteSaving} onClick={props.saveSite}>{props.siteSaving ? "保存中..." : "保存"}</Button>
+        </Flex>
+        <Field label="自动发现密钥"><TextField.Root value={props.site.auto_discovery_key} onChange={(event) => props.setSite((item) => ({ ...item, auto_discovery_key: event.target.value }))} placeholder="留空禁用；长度建议不少于 16 位" /></Field>
+        <label className="flex items-center gap-2 text-sm"><Switch checked={props.site.geoip_enabled} onCheckedChange={(value) => props.setSite((item) => ({ ...item, geoip_enabled: value }))} />启用 GeoIP 展示</label>
+        <Field label="GeoIP 来源"><TextField.Root value="cloudflare" disabled /></Field>
       </Card>
 
       <Card className="space-y-4">
@@ -1167,6 +1183,15 @@ function SettingsPage(props: {
           <Field label="Bot Token"><TextField.Root value={form.telegram_bot_token ?? ""} onChange={(event) => setForm((item) => ({ ...item, telegram_bot_token: event.target.value }))} /></Field>
           <Field label="Chat ID"><TextField.Root value={form.telegram_chat_id ?? ""} onChange={(event) => setForm((item) => ({ ...item, telegram_chat_id: event.target.value }))} /></Field>
         </div>
+        <Separator size="4" />
+        <label className="flex items-center gap-2 text-sm"><Switch checked={form.serverchan_enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, serverchan_enabled: value }))} />ServerChan</label>
+        <Field label="SendKey"><TextField.Root value={form.serverchan_sendkey ?? ""} onChange={(event) => setForm((item) => ({ ...item, serverchan_sendkey: event.target.value }))} /></Field>
+        <Separator size="4" />
+        <label className="flex items-center gap-2 text-sm"><Switch checked={form.pushplus_enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, pushplus_enabled: value }))} />PushPlus</label>
+        <Field label="Token"><TextField.Root value={form.pushplus_token ?? ""} onChange={(event) => setForm((item) => ({ ...item, pushplus_token: event.target.value }))} /></Field>
+        <Separator size="4" />
+        <label className="flex items-center gap-2 text-sm"><Switch checked={form.bark_enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, bark_enabled: value }))} />Bark</label>
+        <Field label="Bark 地址"><TextField.Root placeholder="https://api.day.app/your-key" value={form.bark_url ?? ""} onChange={(event) => setForm((item) => ({ ...item, bark_url: event.target.value }))} /></Field>
       </Card>
     </div>
   );
@@ -1186,7 +1211,41 @@ function InitPage({ loading, onSubmit }: { loading: boolean; onSubmit: (username
   </AuthFrame>;
 }
 
-function LoginPage({ loading, onSubmit }: { loading: boolean; onSubmit: (username: string, password: string) => void }) {
+function SignOnPage({ site, setSite, saving, save }: { site: SiteConfig; setSite: React.Dispatch<React.SetStateAction<SiteConfig>>; saving: boolean; save: () => void }) {
+  const generateApiKey = () => {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const key = `daoyi-${btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`;
+    setSite((item) => ({ ...item, api_key: key }));
+  };
+  return (
+    <div className="space-y-4">
+      <Flex justify="between" align="center" gap="3" wrap="wrap">
+        <div><Text size="1" color="gray">Sign On</Text><Text as="div" size="6" weight="bold">登录与 API</Text></div>
+        <Button disabled={saving} onClick={save}>{saving ? "保存中..." : "保存"}</Button>
+      </Flex>
+      <Card className="space-y-4">
+        <div><Text weight="bold">API Key</Text><Text as="div" size="2" color="gray">用于脚本访问后台 API：Authorization: Bearer YOUR_KEY。</Text></div>
+        <Field label="API Key"><TextField.Root value={site.api_key} onChange={(event) => setSite((item) => ({ ...item, api_key: event.target.value }))} /></Field>
+        <Button variant="soft" onClick={generateApiKey}>生成</Button>
+      </Card>
+      <Card className="space-y-4">
+        <div><Text weight="bold">OIDC / SSO</Text><Text as="div" size="2" color="gray">配置独立保存；OAuth 回调接入会在下一步完成。</Text></div>
+        <label className="flex items-center gap-2 text-sm"><Switch checked={site.oidc_enabled} onCheckedChange={(value) => setSite((item) => ({ ...item, oidc_enabled: value }))} />启用 OIDC</label>
+        <label className="flex items-center gap-2 text-sm"><Switch checked={site.disable_password_login} onCheckedChange={(value) => setSite((item) => ({ ...item, disable_password_login: value }))} />启用 OIDC 后禁用密码登录</label>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Provider 名称"><TextField.Root value={site.oidc_provider} onChange={(event) => setSite((item) => ({ ...item, oidc_provider: event.target.value }))} /></Field>
+          <Field label="Issuer"><TextField.Root value={site.oidc_issuer} onChange={(event) => setSite((item) => ({ ...item, oidc_issuer: event.target.value }))} /></Field>
+          <Field label="Client ID"><TextField.Root value={site.oidc_client_id} onChange={(event) => setSite((item) => ({ ...item, oidc_client_id: event.target.value }))} /></Field>
+          <Field label="Client Secret"><TextField.Root value={site.oidc_client_secret} onChange={(event) => setSite((item) => ({ ...item, oidc_client_secret: event.target.value }))} /></Field>
+        </div>
+        <Text as="p" size="2" color="gray">回调地址：{window.location.origin}/api/oauth/callback</Text>
+      </Card>
+    </div>
+  );
+}
+
+function LoginPage({ site, loading, onSubmit }: { site: SiteConfig; loading: boolean; onSubmit: (username: string, password: string) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   return <AuthFrame title="登录" subtitle="登录后查看实时节点状态，并管理 Agent 与通知。">
@@ -1194,6 +1253,7 @@ function LoginPage({ loading, onSubmit }: { loading: boolean; onSubmit: (usernam
       <Field label="用户名"><TextField.Root id="login-username" name="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></Field>
       <Field label="密码"><TextField.Root id="login-password" name="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
       <Button type="submit" disabled={loading}>登录</Button>
+      {site.oidc_enabled && <Button type="button" variant="soft" onClick={() => { window.location.href = "/api/oauth/login"; }}>{site.oidc_provider || "OIDC"} 登录</Button>}
     </form>
   </AuthFrame>;
 }
@@ -1305,7 +1365,7 @@ function LoadingScreen() {
 function currentRoute(): Route {
   const path = window.location.pathname;
   if (path.startsWith("/instance/")) return "/instance";
-  if (path === "/admin" || path === "/admin/agents" || path === "/admin/settings" || path === "/admin/init" || path === "/admin/login") return path;
+  if (path === "/admin" || path === "/admin/agents" || path === "/admin/settings" || path === "/admin/sign-on" || path === "/admin/init" || path === "/admin/login") return path;
   return "/";
 }
 
@@ -1414,7 +1474,13 @@ function defaultNotificationConfig(): NotificationConfig {
     webhook_url: "",
     telegram_enabled: false,
     telegram_bot_token: "",
-    telegram_chat_id: ""
+    telegram_chat_id: "",
+    serverchan_enabled: false,
+    serverchan_sendkey: "",
+    pushplus_enabled: false,
+    pushplus_token: "",
+    bark_enabled: false,
+    bark_url: ""
   };
 }
 
@@ -1427,7 +1493,16 @@ function defaultSiteConfig(): SiteConfig {
     agent_interval_sec: 3,
     agent_channel: "stable",
     agent_install_dir: "/usr/local/bin",
-    agent_config_file: "/etc/daoyi-agent.env",
+    api_key: "",
+    auto_discovery_key: "",
+    geoip_enabled: true,
+    geoip_provider: "cloudflare",
+    disable_password_login: false,
+    oidc_enabled: false,
+    oidc_provider: "oidc",
+    oidc_issuer: "",
+    oidc_client_id: "",
+    oidc_client_secret: "",
     custom_head: "",
     custom_body: ""
   };
@@ -1638,9 +1713,8 @@ function buildInstallCommand(token: string, site?: SiteConfig | string) {
   const interval = typeof site === "object" ? site.agent_interval_sec : 3;
   const channel = typeof site === "object" ? site.agent_channel : "stable";
   const installDir = typeof site === "object" ? site.agent_install_dir : "/usr/local/bin";
-  const configFile = typeof site === "object" ? site.agent_config_file : "/etc/daoyi-agent.env";
   const origin = (agentEndpoint.trim() || window.location.origin).replace(/\/+$/, "");
-  return `curl -fsSL ${origin}/install.sh | sh -s -- --endpoint '${shellQuote(origin)}' --token '${token.replaceAll("'", "'\"'\"'")}' --profile '${shellQuote(profile)}' --interval '${interval}' --channel '${shellQuote(channel)}' --install-dir '${shellQuote(installDir)}' --config-file '${shellQuote(configFile)}' --installer-url '${shellQuote(`${origin}/install.sh`)}'`;
+  return `curl -fsSL ${origin}/install.sh | sh -s -- --endpoint '${shellQuote(origin)}' --token '${token.replaceAll("'", "'\"'\"'")}' --profile '${shellQuote(profile)}' --interval '${interval}' --channel '${shellQuote(channel)}' --install-dir '${shellQuote(installDir)}' --installer-url '${shellQuote(`${origin}/install.sh`)}'`;
 }
 function shellQuote(value: string) { return value.replaceAll("'", "'\"'\"'"); }
 function emptyToNull(value: string) { const next = value.trim(); return next ? next : null; }

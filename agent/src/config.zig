@@ -47,6 +47,34 @@ pub const Config = struct {
         };
     }
 
+    pub fn applyArgs(self: *Config, args: []const []const u8) !void {
+        var index: usize = 1;
+        while (index < args.len) {
+            const key = args[index];
+            if (std.mem.eql(u8, key, "--endpoint")) {
+                const value = try argValue(args, &index, key);
+                self.allocator.free(self.endpoint);
+                self.endpoint = try self.allocator.dupe(u8, value);
+            } else if (std.mem.eql(u8, key, "--token")) {
+                const value = try argValue(args, &index, key);
+                self.allocator.free(self.token);
+                self.token = try self.allocator.dupe(u8, value);
+            } else if (std.mem.eql(u8, key, "--agent-id")) {
+                const value = try argValue(args, &index, key);
+                self.allocator.free(self.agent_id);
+                self.agent_id = try self.allocator.dupe(u8, value);
+            } else if (std.mem.eql(u8, key, "--interval")) {
+                const value = try argValue(args, &index, key);
+                self.interval_seconds = try parseInterval(value, 3);
+            } else if (std.mem.eql(u8, key, "--help") or std.mem.eql(u8, key, "-h")) {
+                return error.HelpRequested;
+            } else {
+                return error.UnknownArgument;
+            }
+            index += 1;
+        }
+    }
+
     pub fn deinit(self: *Config) void {
         self.allocator.free(self.endpoint);
         self.allocator.free(self.token);
@@ -57,6 +85,15 @@ pub const Config = struct {
         self.allocator.free(self.gpu_name);
     }
 };
+
+fn argValue(args: []const []const u8, index: *usize, key: []const u8) ![]const u8 {
+    if (index.* + 1 >= args.len) {
+        std.debug.print("missing value for {s}\n", .{key});
+        return error.MissingArgumentValue;
+    }
+    index.* += 1;
+    return args[index.*];
+}
 
 pub fn parseProfile(raw: []const u8) !BuildProfile {
     inline for (std.meta.tags(BuildProfile)) |tag| {
@@ -242,6 +279,10 @@ fn intervalFromEnv(key: []const u8, fallback: u32) !u32 {
     };
     defer allocator.free(raw);
 
-    const value = try std.fmt.parseInt(u32, std.mem.trim(u8, raw, " \t\r\n"), 10);
+    return parseInterval(raw, fallback);
+}
+
+fn parseInterval(raw: []const u8, fallback: u32) !u32 {
+    const value = std.fmt.parseInt(u32, std.mem.trim(u8, raw, " \t\r\n"), 10) catch return fallback;
     return std.math.clamp(value, 1, 3600);
 }

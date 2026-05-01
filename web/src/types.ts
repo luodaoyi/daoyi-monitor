@@ -76,6 +76,12 @@ export type NotificationConfig = {
   telegram_enabled: boolean;
   telegram_bot_token: string | null;
   telegram_chat_id: string | null;
+  serverchan_enabled: boolean;
+  serverchan_sendkey: string | null;
+  pushplus_enabled: boolean;
+  pushplus_token: string | null;
+  bark_enabled: boolean;
+  bark_url: string | null;
 };
 
 export type SiteConfig = {
@@ -86,7 +92,16 @@ export type SiteConfig = {
   agent_interval_sec: number;
   agent_channel: string;
   agent_install_dir: string;
-  agent_config_file: string;
+  api_key: string;
+  auto_discovery_key: string;
+  geoip_enabled: boolean;
+  geoip_provider: string;
+  disable_password_login: boolean;
+  oidc_enabled: boolean;
+  oidc_provider: string;
+  oidc_issuer: string;
+  oidc_client_id: string;
+  oidc_client_secret: string;
   custom_head: string;
   custom_body: string;
 };

@@ -10,7 +10,6 @@ CHANNEL="stable"
 PROFILE="full"
 INTERVAL_SEC="3"
 INSTALL_DIR="/usr/local/bin"
-CONFIG_FILE="/etc/daoyi-agent.env"
 
 usage() {
   cat <<'EOF'
@@ -23,7 +22,6 @@ Options:
   --manifest-url URL
   --installer-url URL
   --install-dir DIR
-  --config-file FILE
 EOF
 }
 
@@ -79,6 +77,10 @@ as_root() {
     echo "root or sudo is required for: $*" >&2
     exit 1
   fi
+}
+
+quote_arg() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\"'\"'/g")"
 }
 
 normalize_endpoint() {
@@ -138,7 +140,6 @@ while [ "$#" -gt 0 ]; do
     --manifest-url) MANIFEST_URL="${2:-}"; shift 2 ;;
     --installer-url) INSTALLER_URL="${2:-}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:-}"; shift 2 ;;
-    --config-file) CONFIG_FILE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -188,15 +189,7 @@ fi
 as_root mkdir -p "$INSTALL_DIR"
 as_root install -m 0755 "$BIN" "$INSTALL_DIR/daoyi-agent"
 
-as_root sh -c "cat > '$CONFIG_FILE'" <<EOF
-DAOYI_AGENT_ENDPOINT=$ENDPOINT
-DAOYI_AGENT_TOKEN=$TOKEN
-DAOYI_AGENT_INTERVAL_SEC=$INTERVAL_SEC
-DAOYI_AGENT_UPDATE_MANIFEST_URL=$MANIFEST_URL
-DAOYI_AGENT_INSTALLER_URL=$INSTALLER_URL
-DAOYI_AGENT_CHANNEL=$CHANNEL
-DAOYI_AGENT_PROFILE=$PROFILE
-EOF
+EXEC_START="$INSTALL_DIR/daoyi-agent --endpoint $(quote_arg "$ENDPOINT") --token $(quote_arg "$TOKEN") --interval $(quote_arg "$INTERVAL_SEC")"
 
 if command -v systemctl >/dev/null 2>&1; then
   as_root sh -c "cat > /etc/systemd/system/daoyi-agent.service" <<EOF
@@ -206,8 +199,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=$CONFIG_FILE
-ExecStart=$INSTALL_DIR/daoyi-agent
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 DynamicUser=true
@@ -222,5 +214,5 @@ EOF
   echo "daoyi-agent installed and started"
 else
   echo "daoyi-agent installed to $INSTALL_DIR/daoyi-agent"
-  echo "systemd not found; start it manually with: . $CONFIG_FILE && $INSTALL_DIR/daoyi-agent"
+  echo "systemd not found; start it manually with: $EXEC_START"
 fi

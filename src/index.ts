@@ -4,6 +4,7 @@ import type { AgentDto, ApiResponse, Env, InitStatus, SiteConfig, UserDto } from
 
 const app = new Hono<{ Bindings: Env }>();
 const SESSION_COOKIE = "daoyi_session";
+const OAUTH_STATE_COOKIE = "daoyi_oauth_state";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const ONLINE_WINDOW_SECONDS = 240;
 const SECRET_MASK = "********";
@@ -72,13 +73,17 @@ app.get("/api/public/agents", async (c) => {
 });
 
 app.get("/api/public/site", async (c) => {
-  return json(await readSiteConfig(c.env));
+  return json(publicSiteConfig(await readSiteConfig(c.env)));
 });
 
 app.post("/api/init", async (c) => initAdmin(c.env, c.req.raw));
 app.post("/api/init/admin", async (c) => initAdmin(c.env, c.req.raw));
 
 app.post("/api/auth/login", async (c) => {
+  const site = await readSiteConfig(c.env);
+  if (site.disable_password_login && site.oidc_enabled) {
+    return error("PASSWORD_LOGIN_DISABLED", "密码登录已禁用", 403);
+  }
   const body = await readJson<{ username?: string; password?: string }>(
     c.req.raw,
   );
@@ -141,6 +146,58 @@ app.get("/api/auth/me", async (c) => {
   return json<UserDto | null>(user);
 });
 
+app.get("/api/oauth/login", async (c) => {
+  const site = await readSiteConfig(c.env);
+  if (!site.oidc_enabled) return error("OIDC_DISABLED", "OIDC 未启用", 400);
+  const discovery = await getOidcDiscovery(site);
+  const state = randomToken(16);
+  const redirectUri = new URL("/api/oauth/callback", c.req.url).toString();
+  const url = new URL(discovery.authorization_endpoint);
+  url.searchParams.set("client_id", site.oidc_client_id);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "openid email profile");
+  url.searchParams.set("state", state);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: url.toString(),
+      "set-cookie": `${OAUTH_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+    },
+  });
+});
+
+app.get("/api/oauth/callback", async (c) => {
+  const site = await readSiteConfig(c.env);
+  if (!site.oidc_enabled) return error("OIDC_DISABLED", "OIDC 未启用", 400);
+  const url = new URL(c.req.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const expected = getCookie(c.req.raw, OAUTH_STATE_COOKIE);
+  if (!code || !state || !expected || !timingSafeEqual(state, expected)) {
+    return error("INVALID_OAUTH_STATE", "OAuth state 无效", 400);
+  }
+  const discovery = await getOidcDiscovery(site);
+  const redirectUri = new URL("/api/oauth/callback", c.req.url).toString();
+  const token = await exchangeOidcCode(discovery.token_endpoint, site, code, redirectUri);
+  const profile = await readOidcProfile(discovery.userinfo_endpoint, token);
+  const user = await findOrCreateOidcUser(c.env, profile);
+  const sessionToken = randomToken(32);
+  const now = nowSeconds();
+  await c.env.DB.prepare(
+    `
+      INSERT INTO sessions (id, user_id, token_hash, user_agent, ip, expires_at, created_at, last_seen_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+    `,
+  )
+    .bind(randomId(), user.id, await sha256Hex(sessionToken), c.req.header("user-agent") ?? "", c.req.header("cf-connecting-ip") ?? "", now + SESSION_TTL_SECONDS, now)
+    .run();
+  const headers = sessionCookie(sessionToken, now + SESSION_TTL_SECONDS);
+  headers.append("set-cookie", `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`);
+  headers.set("location", "/admin");
+  return new Response(null, { status: 302, headers });
+});
+
 app.get("/api/settings/notifications", async (c) => {
   const user = await requireAdmin(c.env, c.req.raw);
   if (!user.ok) return user.response;
@@ -169,7 +226,7 @@ app.post("/api/settings/notifications/test", async (c) => {
 app.get("/api/settings/site", async (c) => {
   const user = await requireAdmin(c.env, c.req.raw);
   if (!user.ok) return user.response;
-  return json(await readSiteConfig(c.env));
+  return json(maskSiteConfig(await readSiteConfig(c.env)));
 });
 
 app.put("/api/settings/site", async (c) => {
@@ -178,7 +235,7 @@ app.put("/api/settings/site", async (c) => {
   const body = await readJson<Partial<SiteConfig>>(c.req.raw);
   const next = normalizeSiteConfig(body, await readSiteConfig(c.env));
   await writeSetting(c.env, "site_config", JSON.stringify(next));
-  return json(next);
+  return json(maskSiteConfig(next));
 });
 
 app.get("/api/settings/backup", async (c) => {
@@ -200,6 +257,39 @@ app.post("/api/settings/backup/import", async (c) => {
   const body = await readJson<unknown>(c.req.raw);
   const result = await importBackup(c.env, body);
   return json(result);
+});
+
+app.post("/api/agents/discover", async (c) => {
+  const body = await readJson<{ key?: string; name?: string; tags?: string; group_name?: string }>(c.req.raw);
+  const site = await readSiteConfig(c.env);
+  if (!site.auto_discovery_key || body.key !== site.auto_discovery_key) {
+    return error("INVALID_DISCOVERY_KEY", "自动发现密钥无效", 401);
+  }
+  const name = requireString(body.name, "name", 120);
+  const token = randomToken(32);
+  const now = nowSeconds();
+  const id = randomId();
+  await c.env.DB.prepare(
+    `
+      INSERT INTO agents (
+        id, name, token_hash, token_preview, enabled, hidden, weight, group_name,
+        tags, remark, public_remark, created_at, updated_at
+      )
+      VALUES (?1, ?2, ?3, ?4, 1, 0, 0, ?5, ?6, NULL, NULL, ?7, ?7)
+    `,
+  )
+    .bind(
+      id,
+      name,
+      await sha256Hex(token),
+      previewToken(token),
+      nullableStringLoose(body.group_name, 120) ?? "default",
+      nullableStringLoose(body.tags, 500),
+      now,
+    )
+    .run();
+  const agent = await getAgentRow(c.env, id);
+  return json<{ agent: AgentDto; token: string }>({ agent: agentFromRow(agent!), token }, 201);
 });
 
 app.get("/api/agents", async (c) => {
@@ -468,7 +558,6 @@ CHANNEL="stable"
 PROFILE="full"
 INTERVAL_SEC="3"
 INSTALL_DIR="/usr/local/bin"
-CONFIG_FILE="/etc/daoyi-agent.env"
 
 usage() {
   cat <<'EOF'
@@ -481,7 +570,6 @@ Options:
   --manifest-url URL
   --installer-url URL
   --install-dir DIR
-  --config-file FILE
 EOF
 }
 
@@ -537,6 +625,10 @@ as_root() {
     echo "root or sudo is required for: $*" >&2
     exit 1
   fi
+}
+
+quote_arg() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\"'\"'/g")"
 }
 
 normalize_endpoint() {
@@ -596,7 +688,6 @@ while [ "$#" -gt 0 ]; do
     --manifest-url) MANIFEST_URL="$2"; shift 2 ;;
     --installer-url) INSTALLER_URL="$2"; shift 2 ;;
     --install-dir) INSTALL_DIR="$2"; shift 2 ;;
-    --config-file) CONFIG_FILE="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -649,15 +740,7 @@ fi
 as_root mkdir -p "$INSTALL_DIR"
 as_root install -m 0755 "$BIN" "$INSTALL_DIR/daoyi-agent"
 
-as_root sh -c "cat > '$CONFIG_FILE'" <<EOF
-DAOYI_AGENT_ENDPOINT=$ENDPOINT
-DAOYI_AGENT_TOKEN=$TOKEN
-DAOYI_AGENT_INTERVAL_SEC=$INTERVAL_SEC
-DAOYI_AGENT_UPDATE_MANIFEST_URL=$MANIFEST_URL
-DAOYI_AGENT_INSTALLER_URL=$INSTALLER_URL
-DAOYI_AGENT_CHANNEL=$CHANNEL
-DAOYI_AGENT_PROFILE=$PROFILE
-EOF
+EXEC_START="$INSTALL_DIR/daoyi-agent --endpoint $(quote_arg "$ENDPOINT") --token $(quote_arg "$TOKEN") --interval $(quote_arg "$INTERVAL_SEC")"
 
 if command -v systemctl >/dev/null 2>&1; then
   as_root sh -c "cat > /etc/systemd/system/daoyi-agent.service" <<EOF
@@ -667,8 +750,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=$CONFIG_FILE
-ExecStart=$INSTALL_DIR/daoyi-agent
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 DynamicUser=true
@@ -683,7 +765,7 @@ EOF
   echo "daoyi-agent installed and started"
 else
   echo "daoyi-agent installed to $INSTALL_DIR/daoyi-agent"
-  echo "systemd not found; start it manually with: . $CONFIG_FILE && $INSTALL_DIR/daoyi-agent"
+  echo "systemd not found; start it manually with: $EXEC_START"
 fi
 `;
 
@@ -829,6 +911,12 @@ type NotificationConfig = {
   telegram_enabled: boolean;
   telegram_bot_token: string | null;
   telegram_chat_id: string | null;
+  serverchan_enabled: boolean;
+  serverchan_sendkey: string | null;
+  pushplus_enabled: boolean;
+  pushplus_token: string | null;
+  bark_enabled: boolean;
+  bark_url: string | null;
 };
 
 type NotificationState = {
@@ -859,6 +947,24 @@ type AgentBackupRow = {
   public_remark: string | null;
   created_at: number;
   updated_at: number;
+};
+
+type OidcDiscovery = {
+  authorization_endpoint: string;
+  token_endpoint: string;
+  userinfo_endpoint?: string;
+};
+
+type OidcTokenResponse = {
+  access_token?: string;
+  id_token?: string;
+};
+
+type OidcProfile = {
+  sub: string;
+  email?: string;
+  preferred_username?: string;
+  name?: string;
 };
 
 function json<T>(data: T, status = 200, headers?: HeadersInit): Response {
@@ -1046,6 +1152,14 @@ async function requireAdmin(
   env: Env,
   request: Request,
 ): Promise<{ ok: true; user: UserDto } | { ok: false; response: Response }> {
+  const authorization = request.headers.get("authorization") ?? "";
+  if (authorization.toLowerCase().startsWith("bearer ")) {
+    const token = authorization.slice(7).trim();
+    const site = await readSiteConfig(env);
+    if (site.api_key && timingSafeEqual(token, site.api_key)) {
+      return { ok: true, user: { id: "api-key", username: "api-key" } };
+    }
+  }
   const user = await getCurrentUser(env, request);
   if (!user) return { ok: false, response: error("UNAUTHORIZED", "请先登录", 401) };
   return { ok: true, user };
@@ -1143,10 +1257,43 @@ function normalizeSiteConfig(raw: unknown, existing?: SiteConfig): SiteConfig {
     agent_interval_sec: readIntegerRange(value.agent_interval_sec, existing?.agent_interval_sec ?? 3, 1, 300),
     agent_channel: readLimitedString(value.agent_channel, existing?.agent_channel ?? "stable", 40),
     agent_install_dir: readLimitedString(value.agent_install_dir, existing?.agent_install_dir ?? "/usr/local/bin", 200),
-    agent_config_file: readLimitedString(value.agent_config_file, existing?.agent_config_file ?? "/etc/daoyi-agent.env", 200),
+    api_key: readLimitedString(value.api_key, existing?.api_key ?? "", 256),
+    auto_discovery_key: readLimitedString(value.auto_discovery_key, existing?.auto_discovery_key ?? "", 256),
+    geoip_enabled: value.geoip_enabled !== false,
+    geoip_provider: readEnumString(value.geoip_provider, existing?.geoip_provider ?? "cloudflare", ["cloudflare"]),
+    disable_password_login: value.disable_password_login === true,
+    oidc_enabled: value.oidc_enabled === true,
+    oidc_provider: readLimitedString(value.oidc_provider, existing?.oidc_provider ?? "oidc", 80),
+    oidc_issuer: readLimitedString(value.oidc_issuer, existing?.oidc_issuer ?? "", 2048),
+    oidc_client_id: readLimitedString(value.oidc_client_id, existing?.oidc_client_id ?? "", 512),
+    oidc_client_secret: preserveMaskedString(value.oidc_client_secret, existing?.oidc_client_secret, 512),
     custom_head: readLimitedString(value.custom_head, existing?.custom_head ?? "", 20000),
     custom_body: readLimitedString(value.custom_body, existing?.custom_body ?? "", 20000),
   };
+}
+
+function maskSiteConfig(config: SiteConfig): SiteConfig {
+  return {
+    ...config,
+    api_key: config.api_key ? SECRET_MASK : "",
+    auto_discovery_key: config.auto_discovery_key ? SECRET_MASK : "",
+    oidc_client_secret: config.oidc_client_secret ? SECRET_MASK : "",
+  };
+}
+
+function publicSiteConfig(config: SiteConfig): SiteConfig {
+  return {
+    ...maskSiteConfig(config),
+    api_key: "",
+    auto_discovery_key: "",
+    disable_password_login: false,
+    oidc_client_secret: "",
+  };
+}
+
+function preserveMaskedString(value: unknown, existing: string | undefined, max: number): string {
+  if (value === SECRET_MASK) return existing ?? "";
+  return readLimitedString(value, existing ?? "", max);
 }
 
 function readLimitedString(value: unknown, fallback: string, max: number): string {
@@ -1182,6 +1329,12 @@ function normalizeNotificationConfig(raw: unknown, existing?: NotificationConfig
     telegram_enabled: value.telegram_enabled === true,
     telegram_bot_token: preserveSecret(value.telegram_bot_token, existing?.telegram_bot_token, 256),
     telegram_chat_id: preserveSecret(value.telegram_chat_id, existing?.telegram_chat_id, 128),
+    serverchan_enabled: value.serverchan_enabled === true,
+    serverchan_sendkey: preserveSecret(value.serverchan_sendkey, existing?.serverchan_sendkey, 256),
+    pushplus_enabled: value.pushplus_enabled === true,
+    pushplus_token: preserveSecret(value.pushplus_token, existing?.pushplus_token, 256),
+    bark_enabled: value.bark_enabled === true,
+    bark_url: preserveSecret(value.bark_url, existing?.bark_url, 2048),
   };
 }
 
@@ -1191,6 +1344,9 @@ function maskNotificationConfig(config: NotificationConfig): NotificationConfig 
     webhook_url: config.webhook_url ? SECRET_MASK : null,
     telegram_bot_token: config.telegram_bot_token ? SECRET_MASK : null,
     telegram_chat_id: config.telegram_chat_id ? SECRET_MASK : null,
+    serverchan_sendkey: config.serverchan_sendkey ? SECRET_MASK : null,
+    pushplus_token: config.pushplus_token ? SECRET_MASK : null,
+    bark_url: config.bark_url ? SECRET_MASK : null,
   };
 }
 
@@ -1371,11 +1527,143 @@ async function sendNotifications(config: NotificationConfig, message: string): P
     ));
   }
 
+  if (config.serverchan_enabled && config.serverchan_sendkey) {
+    jobs.push(checkNotificationResponse(
+      fetch(`https://sctapi.ftqq.com/${encodeURIComponent(config.serverchan_sendkey)}.send`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ title: "Daoyi Monitor", desp: message }),
+        signal: AbortSignal.timeout(5000),
+      }),
+      "serverchan",
+    ));
+  }
+
+  if (config.pushplus_enabled && config.pushplus_token) {
+    jobs.push(checkNotificationResponse(
+      fetch("https://www.pushplus.plus/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: config.pushplus_token, title: "Daoyi Monitor", content: message }),
+        signal: AbortSignal.timeout(5000),
+      }),
+      "pushplus",
+    ));
+  }
+
+  if (config.bark_enabled && config.bark_url) {
+    const base = config.bark_url.replace(/\/+$/, "");
+    jobs.push(checkNotificationResponse(
+      fetch(`${base}/${encodeURIComponent("Daoyi Monitor")}/${encodeURIComponent(message)}`, {
+        method: "POST",
+        signal: AbortSignal.timeout(5000),
+      }),
+      "bark",
+    ));
+  }
+
   if (jobs.length === 0) {
     throw new Error("No notification channel configured.");
   }
 
   await Promise.all(jobs);
+}
+
+async function getOidcDiscovery(site: SiteConfig): Promise<OidcDiscovery> {
+  if (!site.oidc_issuer || !site.oidc_client_id) throw new Error("OIDC 配置不完整。");
+  const issuer = site.oidc_issuer.replace(/\/+$/, "");
+  const response = await fetch(`${issuer}/.well-known/openid-configuration`, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`OIDC discovery failed: ${response.status}`);
+  const raw = await response.json<unknown>();
+  if (!isRecord(raw)) throw new Error("OIDC discovery response invalid.");
+  const authorization = readString(raw.authorization_endpoint);
+  const token = readString(raw.token_endpoint);
+  if (!authorization || !token) throw new Error("OIDC discovery missing endpoints.");
+  return {
+    authorization_endpoint: authorization,
+    token_endpoint: token,
+    userinfo_endpoint: readString(raw.userinfo_endpoint),
+  };
+}
+
+async function exchangeOidcCode(tokenEndpoint: string, site: SiteConfig, code: string, redirectUri: string): Promise<OidcTokenResponse> {
+  const response = await fetch(tokenEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      client_id: site.oidc_client_id,
+      client_secret: site.oidc_client_secret,
+    }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(`OIDC token exchange failed: ${response.status}`);
+  const raw = await response.json<unknown>();
+  if (!isRecord(raw)) throw new Error("OIDC token response invalid.");
+  return {
+    access_token: readString(raw.access_token),
+    id_token: readString(raw.id_token),
+  };
+}
+
+async function readOidcProfile(userinfoEndpoint: string | undefined, token: OidcTokenResponse): Promise<OidcProfile> {
+  let raw: unknown = null;
+  if (userinfoEndpoint && token.access_token) {
+    const response = await fetch(userinfoEndpoint, {
+      headers: { authorization: `Bearer ${token.access_token}`, accept: "application/json" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (response.ok) raw = await response.json<unknown>();
+  }
+  if (!raw && token.id_token) raw = decodeJwtPayload(token.id_token);
+  if (!isRecord(raw)) throw new Error("OIDC profile unavailable.");
+  const sub = readString(raw.sub);
+  if (!sub) throw new Error("OIDC profile missing sub.");
+  return {
+    sub,
+    email: readString(raw.email),
+    preferred_username: readString(raw.preferred_username),
+    name: readString(raw.name),
+  };
+}
+
+async function findOrCreateOidcUser(env: Env, profile: OidcProfile): Promise<UserDto> {
+  const username = sanitizeUsername(profile.preferred_username ?? profile.email ?? profile.name ?? profile.sub);
+  const existing = await env.DB.prepare(`SELECT id, username FROM users WHERE username = ?1 LIMIT 1`)
+    .bind(username)
+    .first<UserDto>();
+  if (existing) return existing;
+  const password = randomToken(32);
+  const hashed = await hashPassword(password);
+  const id = randomId();
+  const now = nowSeconds();
+  await env.DB.prepare(
+    `INSERT INTO users (id, username, password_hash, password_salt, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)`,
+  )
+    .bind(id, username, hashed.hash, hashed.salt, now)
+    .run();
+  return { id, username };
+}
+
+function sanitizeUsername(raw: string): string {
+  return raw.trim().toLowerCase().replaceAll(/[^a-z0-9_.@-]/g, "_").slice(0, 50) || `oidc_${randomId().slice(0, 8)}`;
+}
+
+function decodeJwtPayload(jwt: string): unknown {
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  const base64 = parts[1].replaceAll("-", "+").replaceAll("_", "/");
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+  try {
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
 }
 
 function renderNotificationTemplate(

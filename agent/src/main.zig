@@ -15,6 +15,16 @@ pub fn main() !void {
 
     var cfg = try config.Config.init(allocator, profile);
     defer cfg.deinit();
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    cfg.applyArgs(args) catch |err| switch (err) {
+        error.HelpRequested => {
+            var stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.writeAll("Usage: daoyi-agent --endpoint URL --token TOKEN [--interval SEC] [--agent-id ID]\n");
+            return;
+        },
+        else => return err,
+    };
 
     const hello = metrics.buildHello(&cfg, build_options.version);
 

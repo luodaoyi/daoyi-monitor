@@ -23,6 +23,7 @@ export function connectAdminWs(onEvent: (event: AdminEvent) => void): WebSocketC
     };
     ws.onopen = () => {
       retry = 500;
+      ws?.send(JSON.stringify({ type: "subscribe" }));
     };
   };
 

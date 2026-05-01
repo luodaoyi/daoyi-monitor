@@ -216,6 +216,7 @@ export default function App() {
 
         await Promise.all([loadAdminAgents(), loadNotifications(), loadSiteSettings()]);
         wsRef.current = connectAdminWs((event) => setAgents((items) => applyRealtimeEvent(items, event)));
+        refreshTimer = window.setInterval(() => void loadAdminAgents(false), 5_000);
       } catch (error) {
         if (!cancelled) setNotice({ kind: "error", message: toErrorMessage(error) });
       } finally {
@@ -246,13 +247,13 @@ export default function App() {
     setSiteSettings(await apiGet<SiteConfig>("/api/public/site"));
   }, []);
 
-  const loadAdminAgents = useCallback(async () => {
-    setAgentsLoading(true);
+  const loadAdminAgents = useCallback(async (withSpinner = true) => {
+    if (withSpinner) setAgentsLoading(true);
     try {
       const payload = await apiGet<unknown>("/api/agents");
       setAgents(readAgentList(payload).map(normalizeAgentRecord).sort(compareAgents));
     } finally {
-      setAgentsLoading(false);
+      if (withSpinner) setAgentsLoading(false);
     }
   }, []);
 

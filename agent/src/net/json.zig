@@ -40,6 +40,12 @@ pub fn writeReport(writer: anytype, report: metrics.ReportMessage) !void {
     try writer.writeAll(",");
     try writeNamedString(writer, "distro", report.distro);
     try writer.writeAll(",");
+    try writeNamedString(writer, "cpu_name", report.cpu_name);
+    try writer.writeAll(",");
+    try writeNamedU32(writer, "cpu_cores", report.cpu_cores);
+    try writer.writeAll(",");
+    try writeNamedString(writer, "gpu_name", report.gpu_name);
+    try writer.writeAll(",");
     try writeNamedF64(writer, "cpu", report.cpu_percent);
     try writer.writeAll(",");
     try writeNamedU64(writer, "uptime_sec", report.uptime_seconds);
@@ -55,6 +61,8 @@ pub fn writeReport(writer: anytype, report: metrics.ReportMessage) !void {
     try writeNamedU64(writer, "swap_used", report.swap_used_bytes);
     try writer.writeAll(",");
     try writeNamedU32(writer, "process_count", report.process_count);
+    try writer.writeAll(",");
+    try writeNamedU32(writer, "connection_count", report.connection_count);
     try writer.writeAll(",");
     try writeNamedU64(writer, "disk_total", report.disk_total_bytes);
     try writer.writeAll(",");

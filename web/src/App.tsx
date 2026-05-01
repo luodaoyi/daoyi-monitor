@@ -16,22 +16,30 @@ import {
 } from "@radix-ui/themes";
 import {
   Activity,
+  ArrowLeft,
   Bell,
   ChevronRight,
   Copy,
+  Cpu,
+  Gauge,
   Grid3X3,
   GripVertical,
+  HardDrive,
   Home,
   KeyRound,
   LogOut,
+  MemoryStick,
   Menu,
   Monitor,
+  Network,
   Plus,
   RefreshCcw,
   Search,
+  Server,
   Settings,
   Table2,
   Trash2,
+  Wifi,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -48,7 +56,7 @@ import type {
   User
 } from "./types";
 
-type Route = "/" | "/admin" | "/admin/agents" | "/admin/settings" | "/admin/init" | "/admin/login";
+type Route = "/" | "/instance" | "/admin" | "/admin/agents" | "/admin/settings" | "/admin/init" | "/admin/login";
 type Notice = { kind: "error" | "success"; message: string };
 type RevealedSecret = { title: string; name: string; token: string };
 type ViewMode = "grid" | "table";
@@ -89,6 +97,7 @@ export default function App() {
   const [notificationForm, setNotificationForm] = useState(defaultNotificationConfig());
   const [notificationSaving, setNotificationSaving] = useState(false);
   const wsRef = useRef<WebSocketController | null>(null);
+  const instanceId = route === "/instance" ? decodeURIComponent(window.location.pathname.replace(/^\/instance\//, "")) : "";
 
   const visibleAgents = useMemo(() => agents.filter((agent) => !agent.hidden), [agents]);
   const sortedVisibleAgents = useMemo(() => [...visibleAgents].sort(compareAgents), [visibleAgents]);
@@ -108,6 +117,10 @@ export default function App() {
   const publicOnlineCount = filteredPublicAgents.filter((agent) => agent.online).length;
   const cpuAverage = averageMetricAny(visibleAgents, ["cpu", "cpu_percent"]);
   const memoryAverage = averageRatioAny(visibleAgents, MEMORY_USED_KEYS, MEMORY_TOTAL_KEYS);
+  const instanceAgent = useMemo(
+    () => sortedVisibleAgents.find((agent) => agent.id === instanceId || agent.agent_id === instanceId) ?? null,
+    [sortedVisibleAgents, instanceId]
+  );
 
   useEffect(() => {
     const onPop = () => setRoute(currentRoute());
@@ -146,7 +159,7 @@ export default function App() {
         if (!isAdminRoute(route)) {
           if (status.schemaReady) {
             await loadPublicAgents();
-            refreshTimer = window.setInterval(() => void loadPublicAgents(false), 30_000);
+            refreshTimer = window.setInterval(() => void loadPublicAgents(false), 5_000);
           }
           return;
         }
@@ -231,10 +244,10 @@ export default function App() {
     }
   }
 
-  function navigate(next: Route) {
-    if (next === route) return;
+  function navigate(next: string) {
+    if (next === window.location.pathname) return;
     window.history.pushState({}, "", next);
-    setRoute(next);
+    setRoute(currentRoute());
   }
 
   async function submitInit(username: string, password: string, confirm: string) {
@@ -356,7 +369,16 @@ export default function App() {
     }
   }
 
-  const content = !isAdminRoute(route) ? (
+  const content = route === "/instance" ? (
+    <InstancePage
+      agent={instanceAgent}
+      agents={sortedVisibleAgents}
+      clock={clock}
+      loading={agentsLoading}
+      refresh={() => void loadPublicAgents()}
+      navigate={navigate}
+    />
+  ) : !isAdminRoute(route) ? (
     <PublicPage
       agents={filteredPublicAgents}
       allCount={publicAgents.length}
@@ -391,7 +413,7 @@ export default function App() {
         />
       )}
       {route === "/admin" && (
-        <Dashboard agents={visibleAgents} onlineCount={onlineCount} cpuAverage={cpuAverage} memoryAverage={memoryAverage} refresh={() => void loadAdminAgents()} />
+        <Dashboard agents={visibleAgents} onlineCount={onlineCount} cpuAverage={cpuAverage} memoryAverage={memoryAverage} refresh={() => void loadAdminAgents()} navigate={navigate} />
       )}
       {route === "/admin/agents" && (
         <AgentsPage
@@ -450,7 +472,7 @@ function PublicPage(props: {
   setViewMode: (value: ViewMode) => void;
   loading: boolean;
   refresh: () => void;
-  navigate: (route: Route) => void;
+  navigate: (route: string) => void;
 }) {
   const up = sumMetricAny(props.agents, ["network_total_up", "net_total_up", "total_upload", "tx_total"]);
   const down = sumMetricAny(props.agents, ["network_total_down", "net_total_down", "total_download", "rx_total"]);
@@ -497,7 +519,139 @@ function PublicPage(props: {
           setSelectedGroup={props.setSelectedGroup}
           viewMode={props.viewMode}
           setViewMode={props.setViewMode}
+          navigate={props.navigate}
         />
+      </div>
+    </main>
+  );
+}
+
+function InstancePage(props: {
+  agent: AgentRecord | null;
+  agents: AgentRecord[];
+  clock: Date;
+  loading: boolean;
+  refresh: () => void;
+  navigate: (route: string) => void;
+}) {
+  const agent = props.agent;
+  const grouped = useMemo(() => {
+    const groups = new Map<string, AgentRecord[]>();
+    for (const item of props.agents) {
+      const name = item.group_name?.trim() || "default";
+      groups.set(name, [...(groups.get(name) ?? []), item]);
+    }
+    return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right, "zh-Hans-CN"));
+  }, [props.agents]);
+
+  return (
+    <main className="min-h-screen bg-[var(--accent-1)] text-[var(--gray-12)]">
+      <nav className="nav-bar sticky top-0 z-10 flex min-h-14 items-center gap-2 rounded-b-lg px-4 py-2 backdrop-blur">
+        <IconButton variant="ghost" title="返回首页" onClick={() => props.navigate("/")}><ArrowLeft size={18} /></IconButton>
+        <button className="mr-auto flex min-w-0 items-center" onClick={() => props.navigate("/")}>
+          <span className="truncate text-[clamp(1.25rem,5vw,1.875rem)] font-bold leading-tight">Daoyi Monitor</span>
+        </button>
+        <Text size="2" color="gray" className="hidden sm:block">{props.clock.toLocaleTimeString("zh-CN", { hour12: false })}</Text>
+        <IconButton variant="ghost" title="刷新" onClick={props.refresh} disabled={props.loading}><RefreshCcw size={16} /></IconButton>
+        <Button variant="soft" onClick={() => props.navigate("/admin")}>后台管理</Button>
+      </nav>
+
+      <div className="mx-auto grid max-w-7xl gap-4 p-4 md:grid-cols-[280px_1fr]">
+        <aside className="hidden md:block">
+          <Card className="sticky top-20 overflow-hidden">
+            <Flex direction="column" gap="0">
+              <div className="border-b border-[var(--gray-5)] p-3">
+                <Text size="2" weight="bold">服务器列表</Text>
+              </div>
+              <div className="max-h-[calc(100vh-8rem)] overflow-y-auto p-2">
+                {grouped.map(([group, items]) => (
+                  <div key={group} className="mb-2">
+                    <Text as="div" size="1" color="gray" className="px-2 py-1 font-semibold">{group}</Text>
+                    {items.map((item) => {
+                      const active = agent && (item.id === agent.id || item.agent_id === agent.agent_id);
+                      return (
+                        <button
+                          key={item.id}
+                          className={`flex w-full items-center rounded-md border-l-4 px-2 py-1.5 text-left text-sm ${active ? "border-[var(--accent-9)] bg-[var(--accent-4)] font-semibold text-[var(--accent-11)]" : "border-transparent hover:bg-[var(--accent-3)]"}`}
+                          onClick={() => props.navigate(`/instance/${encodeURIComponent(item.id)}`)}
+                        >
+                          <FlagImage agent={item} size="h-5 w-5" />
+                          <span className="truncate">{item.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </Flex>
+          </Card>
+        </aside>
+
+        {!agent ? (
+          <Card className="p-6">
+            <Flex direction="column" align="start" gap="3">
+              <Text size="5" weight="bold">未找到服务器</Text>
+              <Text color="gray">此节点可能被隐藏、删除，或尚未完成首报。</Text>
+              <Button onClick={() => props.navigate("/")}><Home size={16} />返回前台</Button>
+            </Flex>
+          </Card>
+        ) : (
+          <section className="grid gap-4">
+            <Card className="p-4">
+              <Flex direction={{ initial: "column", sm: "row" }} justify="between" gap="3">
+                <Flex align="center" gap="2" className="min-w-0">
+                  <FlagImage agent={agent} size="h-8 w-8" />
+                  <div className="min-w-0">
+                    <Text as="div" size="6" weight="bold" className="truncate">{agent.name}</Text>
+                    <Text as="div" size="2" color="gray" className="truncate">{agent.agent_id}</Text>
+                  </div>
+                </Flex>
+                <Flex align="center" gap="2" wrap="wrap">
+                  <Badge color={agent.online ? "green" : "red"} variant="soft">{agent.online ? "在线" : "离线"}</Badge>
+                  <Flex align="center" gap="1" className="min-w-0">
+                    <OSImage agent={agent} />
+                    <Text size="2" className="truncate">{osText(agent)}</Text>
+                  </Flex>
+                </Flex>
+              </Flex>
+            </Card>
+
+            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
+              <MetricCard title="CPU" value={formatPercent(cpuPercent(agent))} sub={cpuDetailText(agent)} icon={<Cpu size={18} />}><UsageBar label="" value={cpuPercent(agent)} compact /></MetricCard>
+              <MetricCard title="内存" value={formatPercent(memoryPercent(agent))} sub={bytesPair(agent, MEMORY_USED_KEYS, MEMORY_TOTAL_KEYS)} icon={<MemoryStick size={18} />}><UsageBar label="" value={memoryPercent(agent)} compact /></MetricCard>
+              <MetricCard title="磁盘" value={formatPercent(diskPercent(agent))} sub={bytesPair(agent, ["disk_used", "disk_usage"], ["disk_total"])} icon={<HardDrive size={18} />}><UsageBar label="" value={diskPercent(agent)} compact /></MetricCard>
+              <MetricCard title="网络速率" value={`↑ ${formatSpeed(uploadSpeed(agent))}`} sub={`↓ ${formatSpeed(downloadSpeed(agent))}`} icon={<Wifi size={18} />} />
+              <MetricCard title="总流量" value={`↑ ${formatBytes(totalUpload(agent))}`} sub={`↓ ${formatBytes(totalDownload(agent))}`} icon={<Network size={18} />} />
+              <MetricCard title="负载" value={loadText(agent)} sub={`进程 ${numberMetricText(agent, ["process_count", "processes"])} · 连接 ${numberMetricText(agent, ["connection_count", "connections"])}`} icon={<Gauge size={18} />} />
+              <MetricCard title="系统" value={readStringMetricAny(agent, ["distro", "distribution", "os_name"]) ?? readStringMetricAny(agent, ["os"]) ?? "-"} sub={`架构 ${readStringMetricAny(agent, ["arch"]) ?? tagArch(agent) ?? "-"}`} icon={<Server size={18} />} />
+              <MetricCard title="最后上报" value={formatRelativeAge(agent.last_seen)} sub={formatLastSeen(agent.last_seen)} icon={<Activity size={18} />} />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card className="p-4">
+                <Text as="div" size="4" weight="bold" mb="3">硬件信息</Text>
+                <Flex direction="column" gap="2">
+                  <InfoRow label="CPU 型号" value={readStringMetricAny(agent, ["cpu_name", "cpu_model"]) ?? "-"} />
+                  <InfoRow label="CPU 核心" value={numberMetricText(agent, ["cpu_cores", "cores"])} />
+                  <InfoRow label="GPU" value={readStringMetricAny(agent, ["gpu_name", "gpu_model"]) ?? "未上报/未检测到"} />
+                  <InfoRow label="Swap" value={bytesPair(agent, ["swap_used"], ["swap_total"])} />
+                  <InfoRow label="运行时间" value={agent.online ? formatUptime(agent) : "-"} />
+                </Flex>
+              </Card>
+              <Card className="p-4">
+                <Text as="div" size="4" weight="bold" mb="3">网络与系统</Text>
+                <Flex direction="column" gap="2">
+                  <InfoRow label="地区" value={locationText(agent)} />
+                  <InfoRow label="上传速度" value={formatSpeed(uploadSpeed(agent))} />
+                  <InfoRow label="下载速度" value={formatSpeed(downloadSpeed(agent))} />
+                  <InfoRow label="连接数" value={numberMetricText(agent, ["connection_count", "connections"])} />
+                  <InfoRow label="进程数" value={numberMetricText(agent, ["process_count", "processes"])} />
+                  <InfoRow label="更新时间" value={formatLastSeen(agent.last_seen)} />
+                </Flex>
+              </Card>
+            </div>
+          </section>
+        )}
       </div>
     </main>
   );
@@ -514,6 +668,7 @@ function NodeDisplay(props: {
   setSelectedGroup: (value: string) => void;
   viewMode: ViewMode;
   setViewMode: (value: ViewMode) => void;
+  navigate: (route: string) => void;
 }) {
   return (
     <div className="w-full">
@@ -552,20 +707,30 @@ function NodeDisplay(props: {
       </Flex>
       {props.viewMode === "grid" ? (
         <div className="grid w-full gap-2 p-4 md:gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
-          {props.agents.map((agent) => <NodeCard key={agent.id} agent={agent} />)}
+          {props.agents.map((agent) => <NodeCard key={agent.id} agent={agent} navigate={props.navigate} />)}
         </div>
       ) : (
-        <NodeTable agents={props.agents} />
+        <NodeTable agents={props.agents} navigate={props.navigate} />
       )}
     </div>
   );
 }
 
-function NodeCard({ agent }: { agent: AgentRecord }) {
+function NodeCard({ agent, navigate }: { agent: AgentRecord; navigate: (route: string) => void }) {
   const memPct = memoryPercent(agent);
   const diskPct = diskPercent(agent);
+  const open = () => navigate(`/instance/${encodeURIComponent(agent.id)}`);
   return (
-    <Card id={agent.id} className="node-card hover:bg-[var(--accent-2)] hover:shadow-lg">
+    <Card
+      id={agent.id}
+      className="node-card cursor-pointer hover:bg-[var(--accent-2)] hover:shadow-lg"
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") open();
+      }}
+    >
       <Flex direction="column" gap="2">
         <Flex justify="between" align="center">
           <Flex justify="start" align="center" className="min-w-0 flex-1">
@@ -597,7 +762,7 @@ function NodeCard({ agent }: { agent: AgentRecord }) {
   );
 }
 
-function NodeTable({ agents }: { agents: AgentRecord[] }) {
+function NodeTable({ agents, navigate }: { agents: AgentRecord[]; navigate: (route: string) => void }) {
   return (
     <div className="node-table-container mx-4 overflow-x-auto rounded-xl">
       <table className="w-full min-w-[1040px] text-sm">
@@ -618,8 +783,12 @@ function NodeTable({ agents }: { agents: AgentRecord[] }) {
         </thead>
         <tbody>
           {agents.map((agent) => (
-            <tr key={agent.id} className="table-row-hover border-t border-[var(--gray-4)] hover:bg-[var(--accent-2)]">
-              <td className="p-3"><IconButton variant="ghost" size="1" className="expand-button"><ChevronRight size={16} /></IconButton></td>
+            <tr
+              key={agent.id}
+              className="table-row-hover cursor-pointer border-t border-[var(--gray-4)] hover:bg-[var(--accent-2)]"
+              onClick={() => navigate(`/instance/${encodeURIComponent(agent.id)}`)}
+            >
+              <td className="p-3"><IconButton variant="ghost" size="1" className="expand-button" title="详情"><ChevronRight size={16} /></IconButton></td>
               <td className="node-name-cell p-3">
                 <Flex align="center" gap="1">
                   <FlagImage agent={agent} />
@@ -689,7 +858,7 @@ function AdminShell({ route, navigate, user, onLogout, children }: { route: Rout
   );
 }
 
-function Dashboard({ agents, onlineCount, cpuAverage, memoryAverage, refresh }: { agents: AgentRecord[]; onlineCount: number; cpuAverage: number | null; memoryAverage: number | null; refresh: () => void }) {
+function Dashboard({ agents, onlineCount, cpuAverage, memoryAverage, refresh, navigate }: { agents: AgentRecord[]; onlineCount: number; cpuAverage: number | null; memoryAverage: number | null; refresh: () => void; navigate: (route: string) => void }) {
   return (
     <div className="space-y-4">
       <Card>
@@ -705,7 +874,7 @@ function Dashboard({ agents, onlineCount, cpuAverage, memoryAverage, refresh }: 
         </div>
       </Card>
       <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
-        {agents.slice(0, 8).map((agent) => <NodeCard key={agent.id} agent={agent} />)}
+        {agents.slice(0, 8).map((agent) => <NodeCard key={agent.id} agent={agent} navigate={navigate} />)}
       </div>
     </div>
   );
@@ -907,6 +1076,22 @@ function TopCard({ title, value }: { title: string; value: string | number }) {
   return <div className="min-w-52"><Text as="div" size="2" color="gray">{title}</Text><Text as="div" weight="medium" size="3">{value}</Text></div>;
 }
 
+function MetricCard({ title, value, sub, icon, children }: { title: string; value: string; sub?: string; icon: React.ReactNode; children?: React.ReactNode }) {
+  return (
+    <Card className="p-4">
+      <Flex direction="column" gap="2">
+        <Flex justify="between" align="center">
+          <Text size="2" color="gray">{title}</Text>
+          <span className="text-[var(--accent-9)]">{icon}</span>
+        </Flex>
+        <Text as="div" size="5" weight="bold" className="break-words">{value}</Text>
+        {sub && <Text as="div" size="2" color="gray" className="break-words">{sub}</Text>}
+        {children}
+      </Flex>
+    </Card>
+  );
+}
+
 function UsageBar({ label, value, hint, compact = false }: { label: string; value: number | null; hint?: string; compact?: boolean }) {
   const next = value ?? 0;
   const color = next >= 80 ? "var(--red-9)" : next >= 60 ? "var(--orange-9)" : "var(--green-9)";
@@ -947,6 +1132,7 @@ function LoadingScreen() {
 
 function currentRoute(): Route {
   const path = window.location.pathname;
+  if (path.startsWith("/instance/")) return "/instance";
   if (path === "/admin" || path === "/admin/agents" || path === "/admin/settings" || path === "/admin/init" || path === "/admin/login") return path;
   return "/";
 }
@@ -1101,17 +1287,42 @@ function downloadSpeed(agent: AgentRecord) { return readMetricAny(agent, ["netwo
 function totalUpload(agent: AgentRecord) { return readMetricAny(agent, ["network_total_up", "net_total_up", "total_upload", "tx_total"]); }
 function totalDownload(agent: AgentRecord) { return readMetricAny(agent, ["network_total_down", "net_total_down", "total_download", "rx_total"]); }
 
+function numberMetricText(agent: AgentRecord, keys: string[]) {
+  const value = readMetricAny(agent, keys);
+  return value === null ? "-" : Math.round(value).toLocaleString("zh-CN");
+}
+function bytesPair(agent: AgentRecord, usedKeys: string[], totalKeys: string[]) {
+  return `${formatMetricBytes(agent, usedKeys)} / ${formatMetricBytes(agent, totalKeys)}`;
+}
+function cpuDetailText(agent: AgentRecord) {
+  const cores = readMetricAny(agent, ["cpu_cores", "cores"]);
+  const name = readStringMetricAny(agent, ["cpu_name", "cpu_model"]);
+  if (name && cores !== null) return `${Math.round(cores)} 核 · ${name}`;
+  if (name) return name;
+  if (cores !== null) return `${Math.round(cores)} 核`;
+  return "-";
+}
+function loadText(agent: AgentRecord) {
+  const values = [
+    readMetricAny(agent, ["load1"]),
+    readMetricAny(agent, ["load5"]),
+    readMetricAny(agent, ["load15"])
+  ];
+  if (values.every((value) => value === null)) return "-";
+  return values.map((value) => value === null ? "-" : value.toFixed(2)).join(" / ");
+}
 function formatPercent(value: number | null) { return value === null ? "-" : `${value.toFixed(value >= 10 ? 0 : 1)}%`; }
 function formatMetricBytes(agent: AgentRecord, keys: string[]) { return formatBytes(readMetricAny(agent, keys)); }
 function formatBytes(value: number | null) {
-  if (value === null || value <= 0) return "-";
+  if (value === null) return "-";
+  if (value <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let next = value;
   let index = 0;
   while (next >= 1024 && index < units.length - 1) { next /= 1024; index += 1; }
   return `${next.toFixed(next >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
-function formatSpeed(value: number | null) { return value === null ? "0 B/s" : `${formatBytes(value)}/s`; }
+function formatSpeed(value: number | null) { return value === null || value <= 0 ? "0 B/s" : `${formatBytes(value)}/s`; }
 function formatLastSeen(value: number | null) { return value ? new Date(value * 1000).toLocaleString("zh-CN") : "未上报"; }
 function formatRelativeAge(value: number | null) {
   if (!value) return "等待首报";

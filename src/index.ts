@@ -66,7 +66,9 @@ app.get("/api/public/agents", async (c) => {
     `,
   ).all<AgentRow>();
 
-  return json((rows.results ?? []).map(publicAgentFromRow));
+  const agents = (rows.results ?? []).map(publicAgentFromRow);
+  const live = await getHubSnapshot(c.env).catch(() => []);
+  return json(mergeLiveAgents(agents, live));
 });
 
 app.post("/api/init", async (c) => initAdmin(c.env, c.req.raw));
@@ -703,6 +705,50 @@ async function proxyToHub(env: Env, request: Request): Promise<Response> {
   return stub.fetch(request);
 }
 
+async function getHubSnapshot(env: Env): Promise<AgentDto[]> {
+  const id = env.HUB.idFromName("global");
+  const stub = env.HUB.get(id);
+  const response = await stub.fetch("https://daoyi-monitor.internal/snapshot");
+  if (!response.ok) return [];
+  const payload = await response.json<ApiResponse<unknown>>();
+  if (!payload.ok || !Array.isArray(payload.data)) return [];
+  return payload.data
+    .filter(isRecord)
+    .map((item) => ({
+      id: readString(item.id) ?? readString(item.agent_id) ?? "",
+      agent_id: readString(item.agent_id) ?? readString(item.id) ?? "",
+      name: readString(item.name) ?? readString(item.agent_id) ?? "",
+      enabled: true,
+      hidden: false,
+      weight: 0,
+      group_name: null,
+      tags: null,
+      remark: null,
+      public_remark: null,
+      token_preview: "",
+      online: item.online === true,
+      last_seen: typeof item.last_seen === "number" ? item.last_seen : 0,
+      metrics: isRecord(item.metrics) ? item.metrics : undefined,
+      created_at: 0,
+      updated_at: 0,
+    }))
+    .filter((item) => item.id && item.agent_id);
+}
+
+function mergeLiveAgents(base: AgentDto[], live: AgentDto[]): AgentDto[] {
+  const liveById = new Map(live.map((item) => [item.agent_id || item.id, item]));
+  return base.map((agent) => {
+    const status = liveById.get(agent.agent_id) ?? liveById.get(agent.id);
+    if (!status) return agent;
+    return {
+      ...agent,
+      online: status.online,
+      last_seen: status.last_seen || agent.last_seen,
+      metrics: status.metrics ?? agent.metrics,
+    };
+  });
+}
+
 type AgentRow = {
   id: string;
   name: string;
@@ -1165,6 +1211,10 @@ function safeJsonParse(raw: string): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export { Hub };

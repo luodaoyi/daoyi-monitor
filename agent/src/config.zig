@@ -23,6 +23,9 @@ pub const Config = struct {
     agent_id: []const u8,
     hostname: []const u8,
     distro: []const u8,
+    cpu_name: []const u8,
+    cpu_cores: u32,
+    gpu_name: []const u8,
     interval_seconds: u32,
     profile: BuildProfile,
     features: FeatureSet,
@@ -35,6 +38,9 @@ pub const Config = struct {
             .agent_id = try envOrDefault(allocator, "DAOYI_AGENT_ID", "demo-agent"),
             .hostname = try detectHostname(allocator),
             .distro = try detectDistro(allocator),
+            .cpu_name = try detectCpuName(allocator),
+            .cpu_cores = try detectCpuCores(allocator),
+            .gpu_name = try detectGpuName(allocator),
             .interval_seconds = try intervalFromEnv("DAOYI_AGENT_INTERVAL_SEC", 3),
             .profile = profile,
             .features = featuresForProfile(profile),
@@ -47,6 +53,8 @@ pub const Config = struct {
         self.allocator.free(self.agent_id);
         self.allocator.free(self.hostname);
         self.allocator.free(self.distro);
+        self.allocator.free(self.cpu_name);
+        self.allocator.free(self.gpu_name);
     }
 };
 
@@ -134,9 +142,13 @@ fn detectDistro(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn readSmallAbsoluteFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return readAbsoluteFileMax(allocator, path, 4096);
+}
+
+fn readAbsoluteFileMax(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
     const file = try std.fs.openFileAbsolute(path, .{});
     defer file.close();
-    return file.readToEndAlloc(allocator, 4096);
+    return file.readToEndAlloc(allocator, max_bytes);
 }
 
 fn osReleaseValue(raw: []const u8, key: []const u8) ?[]const u8 {
@@ -150,6 +162,74 @@ fn osReleaseValue(raw: []const u8, key: []const u8) ?[]const u8 {
             value = value[1 .. value.len - 1];
         }
         return value;
+    }
+    return null;
+}
+
+fn detectCpuName(allocator: std.mem.Allocator) ![]const u8 {
+    if (builtin.os.tag != .linux) return allocator.dupe(u8, "");
+    const raw = readAbsoluteFileMax(allocator, "/proc/cpuinfo", 64 * 1024) catch return allocator.dupe(u8, "");
+    defer allocator.free(raw);
+    if (cpuInfoValue(raw, "model name")) |value| return allocator.dupe(u8, value);
+    if (cpuInfoValue(raw, "Hardware")) |value| return allocator.dupe(u8, value);
+    if (cpuInfoValue(raw, "Processor")) |value| return allocator.dupe(u8, value);
+    return allocator.dupe(u8, "");
+}
+
+fn detectCpuCores(allocator: std.mem.Allocator) !u32 {
+    if (builtin.os.tag != .linux) return 0;
+    const raw = readAbsoluteFileMax(allocator, "/proc/cpuinfo", 64 * 1024) catch return 0;
+    defer allocator.free(raw);
+
+    var count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " \t"), "processor")) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+fn cpuInfoValue(raw: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t\r\n");
+        if (!std.mem.eql(u8, name, key)) continue;
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t\r\n");
+        return if (value.len > 0) value else null;
+    }
+    return null;
+}
+
+fn detectGpuName(allocator: std.mem.Allocator) ![]const u8 {
+    if (builtin.os.tag != .linux) return allocator.dupe(u8, "");
+
+    var dir = std.fs.openDirAbsolute("/proc/driver/nvidia/gpus", .{ .iterate = true }) catch return allocator.dupe(u8, "");
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        var path_buffer: [256]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buffer, "/proc/driver/nvidia/gpus/{s}/information", .{entry.name}) catch continue;
+        const raw = readAbsoluteFileMax(allocator, path, 4096) catch continue;
+        defer allocator.free(raw);
+        if (gpuInfoValue(raw, "Model")) |value| return allocator.dupe(u8, value);
+    }
+
+    return allocator.dupe(u8, "");
+}
+
+fn gpuInfoValue(raw: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t\r\n");
+        if (!std.mem.eql(u8, name, key)) continue;
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t\r\n");
+        return if (value.len > 0) value else null;
     }
     return null;
 }

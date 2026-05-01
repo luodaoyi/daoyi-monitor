@@ -42,6 +42,9 @@ pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?
         .os = config.targetOsName(),
         .arch = config.targetArchName(),
         .distro = cfg.distro,
+        .cpu_name = cfg.cpu_name,
+        .cpu_cores = cfg.cpu_cores,
+        .gpu_name = cfg.gpu_name,
         .collected_at_unix = std.time.timestamp(),
         .cpu_percent = 0,
         .uptime_seconds = 0,
@@ -51,6 +54,7 @@ pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?
         .swap_total_bytes = 0,
         .swap_used_bytes = 0,
         .process_count = 0,
+        .connection_count = 0,
         .disk_total_bytes = 0,
         .disk_used_bytes = 0,
         .network_up_bytes_per_sec = 0,
@@ -102,6 +106,8 @@ pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?
         report.disk_total_bytes = disk.total_bytes;
         report.disk_used_bytes = disk.used_bytes;
     } else |_| {}
+
+    report.connection_count = collectTcpConnectionCount(allocator) catch 0;
 
     if (readProcFile(allocator, "/proc/net/dev", 16 * 1024)) |net_raw| {
         defer allocator.free(net_raw);
@@ -314,6 +320,29 @@ fn parseNetworkDevLine(line: []const u8) !?NetworkSnapshot {
 fn bytesPerSecond(previous: u64, current: u64, elapsed_seconds: u64) u64 {
     if (elapsed_seconds == 0 or current < previous) return 0;
     return (current - previous) / elapsed_seconds;
+}
+
+fn collectTcpConnectionCount(allocator: std.mem.Allocator) !u32 {
+    var count: u32 = 0;
+    if (readProcFile(allocator, "/proc/net/tcp", 1024 * 1024)) |raw| {
+        defer allocator.free(raw);
+        count += countProcNetRows(raw);
+    } else |_| {}
+    if (readProcFile(allocator, "/proc/net/tcp6", 1024 * 1024)) |raw| {
+        defer allocator.free(raw);
+        count += countProcNetRows(raw);
+    } else |_| {}
+    return count;
+}
+
+fn countProcNetRows(raw: []const u8) u32 {
+    var rows: u32 = 0;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (std.mem.trim(u8, line, " \t\r\n").len > 0) rows += 1;
+    }
+    return rows;
 }
 
 test "parse loadavg uses total processes" {

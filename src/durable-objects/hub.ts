@@ -45,6 +45,13 @@ export class Hub {
       });
     }
 
+    if (url.pathname === "/snapshot") {
+      return Response.json({
+        ok: true,
+        data: await this.getAgentSnapshot(),
+      });
+    }
+
     return new Response("Not found", { status: 404 });
   }
 

@@ -372,7 +372,6 @@ export default function App() {
   const content = route === "/instance" ? (
     <InstancePage
       agent={instanceAgent}
-      agents={sortedVisibleAgents}
       clock={clock}
       loading={agentsLoading}
       refresh={() => void loadPublicAgents()}
@@ -528,21 +527,12 @@ function PublicPage(props: {
 
 function InstancePage(props: {
   agent: AgentRecord | null;
-  agents: AgentRecord[];
   clock: Date;
   loading: boolean;
   refresh: () => void;
   navigate: (route: string) => void;
 }) {
   const agent = props.agent;
-  const grouped = useMemo(() => {
-    const groups = new Map<string, AgentRecord[]>();
-    for (const item of props.agents) {
-      const name = item.group_name?.trim() || "default";
-      groups.set(name, [...(groups.get(name) ?? []), item]);
-    }
-    return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right, "zh-Hans-CN"));
-  }, [props.agents]);
 
   return (
     <main className="min-h-screen bg-[var(--accent-1)] text-[var(--gray-12)]">
@@ -556,37 +546,7 @@ function InstancePage(props: {
         <Button variant="soft" onClick={() => props.navigate("/admin")}>后台管理</Button>
       </nav>
 
-      <div className="mx-auto grid max-w-7xl gap-4 p-4 md:grid-cols-[280px_1fr]">
-        <aside className="hidden md:block">
-          <Card className="sticky top-20 overflow-hidden">
-            <Flex direction="column" gap="0">
-              <div className="border-b border-[var(--gray-5)] p-3">
-                <Text size="2" weight="bold">服务器列表</Text>
-              </div>
-              <div className="max-h-[calc(100vh-8rem)] overflow-y-auto p-2">
-                {grouped.map(([group, items]) => (
-                  <div key={group} className="mb-2">
-                    <Text as="div" size="1" color="gray" className="px-2 py-1 font-semibold">{group}</Text>
-                    {items.map((item) => {
-                      const active = agent && (item.id === agent.id || item.agent_id === agent.agent_id);
-                      return (
-                        <button
-                          key={item.id}
-                          className={`flex w-full items-center rounded-md border-l-4 px-2 py-1.5 text-left text-sm ${active ? "border-[var(--accent-9)] bg-[var(--accent-4)] font-semibold text-[var(--accent-11)]" : "border-transparent hover:bg-[var(--accent-3)]"}`}
-                          onClick={() => props.navigate(`/instance/${encodeURIComponent(item.id)}`)}
-                        >
-                          <FlagImage agent={item} size="h-5 w-5" />
-                          <span className="truncate">{item.name}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </Flex>
-          </Card>
-        </aside>
-
+      <div className="mx-auto max-w-7xl p-4">
         {!agent ? (
           <Card className="p-6">
             <Flex direction="column" align="start" gap="3">

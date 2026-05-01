@@ -1,0 +1,24 @@
+name = "daoyi-monitor"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+
+[assets]
+directory = "public"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "daoyi-monitor"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
+
+[triggers]
+crons = ["*/5 * * * *"]

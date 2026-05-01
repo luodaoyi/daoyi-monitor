@@ -1,0 +1,335 @@
+name: Agent Release
+
+on:
+  push:
+    tags:
+      - "agent-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  detect:
+    name: Detect agent project
+    runs-on: ubuntu-latest
+    outputs:
+      has_agent: ${{ steps.detect.outputs.has_agent }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        shell: bash
+        run: |
+          if [[ -f agent/build.zig ]]; then
+            echo "has_agent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_agent=false" >> "$GITHUB_OUTPUT"
+            echo "::error::agent/build.zig not found; cannot build agent release."
+            exit 1
+          fi
+      - id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#agent-}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }} (${{ matrix.profile }})
+    needs: detect
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Required core Linux musl full builds.
+          - target: x86_64-linux-musl
+            profile: full
+            required: true
+          - target: aarch64-linux-musl
+            profile: full
+            required: true
+          - target: arm-linux-musleabihf
+            profile: full
+            required: true
+          - target: arm-linux-musleabi
+            profile: full
+            required: true
+          - target: mips-linux-musl
+            profile: full
+            required: true
+          - target: mipsel-linux-musl
+            profile: full
+            required: true
+          - target: riscv64-linux-musl
+            profile: full
+            required: true
+
+          # Small and tiny for the most common Linux targets.
+          - target: x86_64-linux-musl
+            profile: small
+            required: false
+          - target: aarch64-linux-musl
+            profile: small
+            required: false
+          - target: x86_64-linux-musl
+            profile: tiny
+            required: false
+          - target: aarch64-linux-musl
+            profile: tiny
+            required: false
+
+          # Experimental extended Linux musl builds.
+          - target: arm-linux-musl
+            profile: full
+            required: false
+          - target: armeb-linux-musleabi
+            profile: full
+            required: false
+          - target: armeb-linux-musleabihf
+            profile: full
+            required: false
+          - target: mips-linux-muslsf
+            profile: full
+            required: false
+          - target: mipsel-linux-muslsf
+            profile: full
+            required: false
+          - target: mips64-linux-musl
+            profile: full
+            required: false
+          - target: mips64el-linux-musl
+            profile: full
+            required: false
+          - target: powerpc-linux-musl
+            profile: full
+            required: false
+          - target: powerpc64-linux-musl
+            profile: full
+            required: false
+          - target: powerpc64le-linux-musl
+            profile: full
+            required: false
+          - target: s390x-linux-musl
+            profile: full
+            required: false
+
+          # Non-Linux builds. Keep them non-blocking until tested.
+          - target: x86-freebsd
+            profile: full
+            required: false
+          - target: x86_64-freebsd
+            profile: full
+            required: false
+          - target: aarch64-freebsd
+            profile: full
+            required: false
+          - target: x86_64-macos
+            profile: full
+            required: false
+          - target: aarch64-macos
+            profile: full
+            required: false
+    continue-on-error: ${{ matrix.required == false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        working-directory: agent
+        run: |
+          zig build \
+            -Dtarget=${{ matrix.target }} \
+            -Doptimize=ReleaseSmall \
+            -Dprofile=${{ matrix.profile }} \
+            -Dversion=${{ needs.detect.outputs.version }} \
+            -Dstrip=true
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          version="${{ needs.detect.outputs.version }}"
+          target="${{ matrix.target }}"
+          profile="${{ matrix.profile }}"
+          pkg="daoyi-agent-${version}-${profile}-${target}"
+          mkdir -p "release/$pkg"
+
+          bin="$(find agent/zig-out -maxdepth 4 -type f \( -name "daoyi-agent" -o -name "daoyi-agent.exe" \) | head -n 1)"
+          if [[ -z "$bin" ]]; then
+            echo "::error::built binary not found"
+            exit 1
+          fi
+
+          cp "$bin" "release/$pkg/"
+          cp LICENSE "release/$pkg/" 2>/dev/null || true
+          cp README.md "release/$pkg/README-agent.md" 2>/dev/null || true
+
+          mkdir -p artifacts
+          if [[ "$target" == *windows* ]]; then
+            archive="${pkg}.zip"
+            (cd release && zip -r "../artifacts/$archive" "$pkg")
+          else
+            archive="${pkg}.tar.gz"
+            tar -C release -czf "artifacts/$archive" "$pkg"
+          fi
+
+          sha256sum "artifacts/$archive" | tee "artifacts/${archive}.sha256"
+          size="$(stat -c%s "artifacts/$archive")"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.profile }}-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  manifest:
+    name: Generate manifest
+    needs:
+      - detect
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+      - name: Generate manifest and checksums
+        shell: bash
+        run: |
+          version="${{ needs.detect.outputs.version }}"
+          release_tag="agent-${version}"
+          release_base="https://github.com/${{ github.repository }}/releases/download/${release_tag}"
+
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -print | sort > artifact-files.txt
+          sha256sum $(cat artifact-files.txt) > checksums.txt
+
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const version = process.env.VERSION;
+          const base = process.env.RELEASE_BASE;
+          const files = fs.readFileSync("artifact-files.txt", "utf8").trim().split(/\n/).filter(Boolean);
+          const artifacts = files.map((file) => {
+            const name = path.basename(file);
+            const body = name.replace(/^daoyi-agent-/, "").replace(/\.(tar\.gz|zip)$/, "");
+            const parts = body.split("-");
+            const versionParts = version.split("-");
+            const afterVersion = parts.slice(versionParts.length);
+            const profile = afterVersion[0];
+            const target = afterVersion.slice(1).join("-");
+            const sha = fs.readFileSync(`${file}.sha256`, "utf8").split(/\s+/)[0];
+            const stat = fs.statSync(file);
+            const [arch, os, abi] = target.split("-");
+            return {
+              os,
+              arch,
+              abi: abi || "",
+              target,
+              profile,
+              url: `${base}/${name}`,
+              sha256: sha,
+              size: stat.size,
+              experimental: ![
+                "x86_64-linux-musl",
+                "aarch64-linux-musl",
+                "arm-linux-musleabihf",
+                "arm-linux-musleabi",
+                "mips-linux-musl",
+                "mipsel-linux-musl",
+                "riscv64-linux-musl",
+              ].includes(target),
+            };
+          });
+          const manifest = {
+            version,
+            channel: "stable",
+            generated_at: Math.floor(Date.now() / 1000),
+            artifacts,
+          };
+          fs.writeFileSync("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+          NODE
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          RELEASE_BASE: "https://github.com/${{ github.repository }}/releases/download/agent-${{ needs.detect.outputs.version }}"
+      - name: Verify required artifacts
+        shell: bash
+        run: |
+          required=(
+            "daoyi-agent-${{ needs.detect.outputs.version }}-full-x86_64-linux-musl.tar.gz"
+            "daoyi-agent-${{ needs.detect.outputs.version }}-full-aarch64-linux-musl.tar.gz"
+            "daoyi-agent-${{ needs.detect.outputs.version }}-full-arm-linux-musleabihf.tar.gz"
+            "daoyi-agent-${{ needs.detect.outputs.version }}-full-arm-linux-musleabi.tar.gz"
+            "daoyi-agent-${{ needs.detect.outputs.version }}-full-mips-linux-musl.tar.gz"
+            "daoyi-agent-${{ needs.detect.outputs.version }}-full-mipsel-linux-musl.tar.gz"
+            "daoyi-agent-${{ needs.detect.outputs.version }}-full-riscv64-linux-musl.tar.gz"
+          )
+          for file in "${required[@]}"; do
+            test -f "artifacts/$file" || {
+              echo "::error::missing required artifact: $file"
+              exit 1
+            }
+          done
+      - name: Prepare release files
+        shell: bash
+        run: |
+          cp manifest.json artifacts/
+          cp checksums.txt artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: |
+            manifest.json
+            checksums.txt
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - detect
+      - manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-files
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-manifest
+          path: release-files
+      - name: Release notes
+        shell: bash
+        run: |
+          {
+            echo "Daoyi Agent ${{ needs.detect.outputs.version }}"
+            echo
+            echo "Generated artifacts:"
+            echo
+            find release-files -type f \( -name "*.tar.gz" -o -name "*.zip" \) -printf "- %f\n" | sort
+          } > release-notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: agent-${{ needs.detect.outputs.version }}
+          name: Daoyi Agent ${{ needs.detect.outputs.version }}
+          body_path: release-notes.md
+          files: |
+            release-files/*.tar.gz
+            release-files/*.zip
+            release-files/*.sha256
+            release-files/manifest.json
+            release-files/checksums.txt

@@ -1,0 +1,11 @@
+.{
+    .name = .asura_agent,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .fingerprint = 0x8352400b58efa7da,
+}

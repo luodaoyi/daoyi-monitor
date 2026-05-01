@@ -1,0 +1,193 @@
+#!/bin/sh
+set -eu
+
+REPO="luodaoyi/daoyi-monitor"
+MANIFEST_URL=""
+ENDPOINT=""
+TOKEN=""
+CHANNEL="stable"
+PROFILE="full"
+INSTALL_DIR="/usr/local/bin"
+CONFIG_FILE="/etc/daoyi-agent.env"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  install.sh --endpoint URL --token TOKEN [options]
+
+Options:
+  --profile full|small|tiny
+  --manifest-url URL
+  --install-dir DIR
+  --config-file FILE
+EOF
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing command: $1" >&2
+    exit 1
+  }
+}
+
+download() {
+  url="$1"
+  output="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$output"
+    return
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -qO "$output" "$url"
+    return
+  fi
+  echo "curl or wget is required" >&2
+  exit 1
+}
+
+as_root() {
+  if [ "$(id -u)" = "0" ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo "root or sudo is required for: $*" >&2
+    exit 1
+  fi
+}
+
+normalize_endpoint() {
+  case "$1" in
+    wss://*|ws://*) printf '%s\n' "$1" ;;
+    https://*) printf 'wss://%s/ws/agent\n' "$(printf '%s' "$1" | sed 's#^https://##; s#/$##')" ;;
+    http://*) printf 'ws://%s/ws/agent\n' "$(printf '%s' "$1" | sed 's#^http://##; s#/$##')" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+detect_target() {
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+  case "$os:$arch" in
+    linux:x86_64|linux:amd64) echo "x86_64-linux-musl" ;;
+    linux:aarch64|linux:arm64) echo "aarch64-linux-musl" ;;
+    linux:armv7l|linux:armv7) echo "arm-linux-musleabihf" ;;
+    linux:armv6l|linux:armv6) echo "arm-linux-musleabi" ;;
+    linux:mips) echo "mips-linux-musl" ;;
+    linux:mipsel) echo "mipsel-linux-musl" ;;
+    linux:riscv64) echo "riscv64-linux-musl" ;;
+    freebsd:x86_64|freebsd:amd64) echo "x86_64-freebsd" ;;
+    freebsd:aarch64|freebsd:arm64) echo "aarch64-freebsd" ;;
+    darwin:x86_64|darwin:amd64) echo "x86_64-macos" ;;
+    darwin:aarch64|darwin:arm64) echo "aarch64-macos" ;;
+    *)
+      echo "unsupported platform: $os/$arch" >&2
+      exit 1
+      ;;
+  esac
+}
+
+manifest_value() {
+  key="$1"
+  awk -v target="$TARGET" -v profile="$PROFILE" -v key="$key" '
+    $0 ~ "\"target\": \"" target "\"" { in_target = 1 }
+    in_target && $0 ~ "\"profile\": \"" profile "\"" { in_profile = 1 }
+    in_target && in_profile && $0 ~ "\"" key "\":" {
+      line = $0
+      sub(".*\"" key "\": *\"", "", line)
+      sub("\".*", "", line)
+      print line
+      exit
+    }
+    in_target && $0 ~ "}" { in_target = 0; in_profile = 0 }
+  ' "$MANIFEST_FILE"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --endpoint) ENDPOINT="${2:-}"; shift 2 ;;
+    --token) TOKEN="${2:-}"; shift 2 ;;
+    --channel) CHANNEL="${2:-stable}"; shift 2 ;;
+    --profile) PROFILE="${2:-full}"; shift 2 ;;
+    --manifest-url) MANIFEST_URL="${2:-}"; shift 2 ;;
+    --install-dir) INSTALL_DIR="${2:-}"; shift 2 ;;
+    --config-file) CONFIG_FILE="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if [ -z "$ENDPOINT" ] || [ -z "$TOKEN" ]; then
+  usage >&2
+  exit 1
+fi
+
+need_cmd awk
+need_cmd tar
+need_cmd sha256sum
+
+TARGET="$(detect_target)"
+ENDPOINT="$(normalize_endpoint "$ENDPOINT")"
+MANIFEST_URL="${MANIFEST_URL:-https://github.com/$REPO/releases/latest/download/manifest.json}"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
+
+MANIFEST_FILE="$WORK_DIR/manifest.json"
+download "$MANIFEST_URL" "$MANIFEST_FILE"
+
+ARTIFACT_URL="$(manifest_value url)"
+ARTIFACT_SHA="$(manifest_value sha256)"
+
+if [ -z "$ARTIFACT_URL" ] || [ -z "$ARTIFACT_SHA" ]; then
+  echo "no artifact for target=$TARGET profile=$PROFILE in manifest" >&2
+  exit 1
+fi
+
+ARCHIVE="$WORK_DIR/agent.tar.gz"
+download "$ARTIFACT_URL" "$ARCHIVE"
+printf '%s  %s\n' "$ARTIFACT_SHA" "$ARCHIVE" | sha256sum -c -
+
+mkdir -p "$WORK_DIR/extract"
+tar -xzf "$ARCHIVE" -C "$WORK_DIR/extract"
+BIN="$(find "$WORK_DIR/extract" -type f -name daoyi-agent | head -n 1)"
+if [ -z "$BIN" ]; then
+  echo "daoyi-agent binary not found in archive" >&2
+  exit 1
+fi
+
+as_root mkdir -p "$INSTALL_DIR"
+as_root install -m 0755 "$BIN" "$INSTALL_DIR/daoyi-agent"
+
+as_root sh -c "cat > '$CONFIG_FILE'" <<EOF
+DAOYI_AGENT_ENDPOINT=$ENDPOINT
+DAOYI_AGENT_TOKEN=$TOKEN
+DAOYI_AGENT_INTERVAL_SEC=3
+DAOYI_AGENT_UPDATE_MANIFEST_URL=$MANIFEST_URL
+DAOYI_AGENT_CHANNEL=$CHANNEL
+EOF
+
+if command -v systemctl >/dev/null 2>&1; then
+  as_root sh -c "cat > /etc/systemd/system/daoyi-agent.service" <<EOF
+[Unit]
+Description=Daoyi Monitor Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=$CONFIG_FILE
+ExecStart=$INSTALL_DIR/daoyi-agent
+Restart=always
+RestartSec=5
+DynamicUser=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  as_root systemctl daemon-reload
+  as_root systemctl enable --now daoyi-agent
+  echo "daoyi-agent installed and started with systemd"
+else
+  echo "daoyi-agent installed to $INSTALL_DIR/daoyi-agent"
+  echo "systemd not found; start it manually with: . $CONFIG_FILE && $INSTALL_DIR/daoyi-agent"
+fi

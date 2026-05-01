@@ -1,0 +1,96 @@
+name: Agent CI
+
+on:
+  pull_request:
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-ci.yml"
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  detect:
+    name: Detect agent project
+    runs-on: ubuntu-latest
+    outputs:
+      has_agent: ${{ steps.detect.outputs.has_agent }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        shell: bash
+        run: |
+          if [[ -f agent/build.zig ]]; then
+            echo "has_agent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_agent=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::agent/build.zig not found; skipping agent CI until the agent is implemented."
+          fi
+
+  test:
+    name: Test agent
+    needs: detect
+    if: needs.detect.outputs.has_agent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Zig test
+        working-directory: agent
+        run: zig build test -Doptimize=ReleaseSafe -Dprofile=full
+
+  build:
+    name: Build ${{ matrix.target }} (${{ matrix.profile }})
+    needs: detect
+    if: needs.detect.outputs.has_agent == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - full
+          - small
+          - tiny
+        target:
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+          - arm-linux-musleabihf
+          - arm-linux-musleabi
+          - mips-linux-musl
+          - mipsel-linux-musl
+          - riscv64-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        working-directory: agent
+        run: |
+          zig build \
+            -Dtarget=${{ matrix.target }} \
+            -Doptimize=ReleaseSmall \
+            -Dprofile=${{ matrix.profile }} \
+            -Dstrip=true
+      - name: Collect binaries
+        shell: bash
+        run: |
+          mkdir -p dist
+          find agent/zig-out -maxdepth 4 -type f \( -name "daoyi-agent" -o -name "daoyi-agent.exe" \) -print -exec cp {} dist/ \;
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daoyi-agent-${{ matrix.profile }}-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error

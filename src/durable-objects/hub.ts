@@ -186,7 +186,21 @@ export class Hub {
       return;
     }
 
-    if (type === "hello" || type === "report") {
+    if (type === "hello") {
+      const now = Math.floor(Date.now() / 1000);
+      const agentId = attachment.agentId;
+      if (!agentId) return;
+      const latest = snapshotFromAgentMessage(agentId, payload, now);
+      this.latestByAgent.set(agentId, latest);
+      this.broadcastToAdmins({
+        type: "latest",
+        data: latest,
+      });
+      ws.send(JSON.stringify({ type: "ack", at: now }));
+      return;
+    }
+
+    if (type === "report") {
       const now = Math.floor(Date.now() / 1000);
       const agentId = attachment.agentId;
       if (!agentId) return;
@@ -197,7 +211,6 @@ export class Hub {
         type: "latest",
         data: latest,
       });
-      ws.send(JSON.stringify({ type: "ack", at: now }));
       return;
     }
 

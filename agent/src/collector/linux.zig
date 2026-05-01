@@ -48,7 +48,7 @@ pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?
     report.uptime_seconds = try parseUptime(uptime_raw);
 
     if (state) |collector_state| {
-        const stat_raw = try readProcFile(allocator, "/proc/stat", 1024);
+        const stat_raw = try readProcFile(allocator, "/proc/stat", 16 * 1024);
         defer allocator.free(stat_raw);
         const cpu = try parseCpuStat(stat_raw);
         if (collector_state.last_cpu) |last| {

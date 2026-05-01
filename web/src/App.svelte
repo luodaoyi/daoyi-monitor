@@ -28,6 +28,8 @@
   type Route = "/" | "/admin" | "/admin/agents" | "/admin/settings" | "/admin/init" | "/admin/login";
   type Notice = { kind: "error" | "success"; message: string };
   type RevealedSecret = { title: string; name: string; token: string };
+  const MEMORY_USED_KEYS = ["mem_used", "memory_used", "memory_used_bytes"];
+  const MEMORY_TOTAL_KEYS = ["mem_total", "memory_total", "memory_total_bytes"];
 
   let route: Route = "/";
   let appLoading = true;
@@ -75,7 +77,7 @@
   $: visibleAgents = $agents.filter((item) => !item.hidden);
   $: hiddenCount = $agents.length - visibleAgents.length;
   $: cpuAverage = averageMetricAny(visibleAgents, ["cpu", "cpu_percent"]);
-  $: memoryAverage = averageRatioAny(visibleAgents, ["mem_used", "memory_used"], ["mem_total", "memory_total"]);
+  $: memoryAverage = averageRatioAny(visibleAgents, MEMORY_USED_KEYS, MEMORY_TOTAL_KEYS);
   $: lastReportAt = latestLastSeen($agents);
   $: sortedVisibleAgents = [...visibleAgents].sort(compareAgentsForMonitor);
   $: previewAgents = sortedVisibleAgents.slice(0, 8);
@@ -678,7 +680,7 @@
   }
 
   function memoryPercent(agent: AgentRecord): number | null {
-    return ratioMetric(agent, ["mem_used", "memory_used"], ["mem_total", "memory_total"]);
+    return ratioMetric(agent, MEMORY_USED_KEYS, MEMORY_TOTAL_KEYS);
   }
 
   function diskPercent(agent: AgentRecord): number | null {
@@ -975,7 +977,7 @@
                     <span>内存</span>
                     <strong>{formatPercent(memoryPercent(agent))}</strong>
                     <div class="usage-bar"><i style={`width: ${percentWidth(memoryPercent(agent))}`}></i></div>
-                    <small>{formatMetricBytes(agent, ["mem_used", "memory_used"])} / {formatMetricBytes(agent, ["mem_total", "memory_total"])}</small>
+                    <small>{formatMetricBytes(agent, MEMORY_USED_KEYS)} / {formatMetricBytes(agent, MEMORY_TOTAL_KEYS)}</small>
                   </div>
                   <div class="usage-row">
                     <span>磁盘</span>
@@ -1274,7 +1276,7 @@
                   </div>
 
                   <dl class="node-meta">
-                    <div><dt>内存</dt><dd>{formatMetricBytes(agent, ["mem_used", "memory_used"])} / {formatMetricBytes(agent, ["mem_total", "memory_total"])}</dd></div>
+                    <div><dt>内存</dt><dd>{formatMetricBytes(agent, MEMORY_USED_KEYS)} / {formatMetricBytes(agent, MEMORY_TOTAL_KEYS)}</dd></div>
                     <div><dt>网络</dt><dd>↑ {formatSpeed(uploadSpeed(agent))} ↓ {formatSpeed(downloadSpeed(agent))}</dd></div>
                     <div><dt>运行</dt><dd>{formatUptime(agent)}</dd></div>
                     <div><dt>更新</dt><dd>{formatRelativeAge(agent.last_seen)}</dd></div>

@@ -66,6 +66,11 @@ export type AdminEvent =
 
 export type NotificationConfig = {
   enabled: boolean;
+  template: string;
+  offline_enabled: boolean;
+  offline_grace_sec: number;
+  load_enabled: boolean;
+  load_threshold: number;
   webhook_enabled: boolean;
   webhook_url: string | null;
   telegram_enabled: boolean;
@@ -77,6 +82,11 @@ export type SiteConfig = {
   site_name: string;
   site_description: string;
   agent_endpoint: string;
+  agent_profile: string;
+  agent_interval_sec: number;
+  agent_channel: string;
+  agent_install_dir: string;
+  agent_config_file: string;
   custom_head: string;
   custom_body: string;
 };

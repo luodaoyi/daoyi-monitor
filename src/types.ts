@@ -31,6 +31,11 @@ export interface SiteConfig {
   site_name: string;
   site_description: string;
   agent_endpoint: string;
+  agent_profile: string;
+  agent_interval_sec: number;
+  agent_channel: string;
+  agent_install_dir: string;
+  agent_config_file: string;
   custom_head: string;
   custom_body: string;
 }

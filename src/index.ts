@@ -819,6 +819,11 @@ type AgentUpdateInput = {
 
 type NotificationConfig = {
   enabled: boolean;
+  template: string;
+  offline_enabled: boolean;
+  offline_grace_sec: number;
+  load_enabled: boolean;
+  load_threshold: number;
   webhook_enabled: boolean;
   webhook_url: string | null;
   telegram_enabled: boolean;
@@ -828,6 +833,7 @@ type NotificationConfig = {
 
 type NotificationState = {
   offline: Record<string, number>;
+  load: Record<string, number>;
 };
 
 type BackupPayload = {
@@ -1069,32 +1075,44 @@ async function scheduled(_controller: ScheduledController, env: Env): Promise<vo
   const now = nowSeconds();
   const rows = await env.DB.prepare(
     `
-      SELECT a.id, a.name, s.last_seen
+      SELECT a.id, a.name, s.last_seen, s.payload_json
       FROM agents a
       LEFT JOIN agent_status s ON s.agent_id = a.id
       WHERE a.enabled = 1 AND a.hidden = 0
       ORDER BY a.weight ASC, a.created_at ASC
     `,
-  ).all<{ id: string; name: string; last_seen: number | null }>();
+  ).all<{ id: string; name: string; last_seen: number | null; payload_json: string | null }>();
 
   const state = await readNotificationState(env);
   const nextOffline: Record<string, number> = {};
+  const nextLoad: Record<string, number> = {};
   const messages: string[] = [];
 
   for (const row of rows.results ?? []) {
     const lastSeen = Number(row.last_seen ?? 0);
-    const isOffline = lastSeen === 0 || now - lastSeen > ONLINE_WINDOW_SECONDS;
+    const metrics = extractMetrics(row.payload_json ? safeJsonParse(row.payload_json) : null);
+    const load1 = readMetricFromRecord(metrics, "load1");
+    const isOffline = lastSeen === 0 || now - lastSeen > config.offline_grace_sec;
 
-    if (isOffline) {
+    if (config.offline_enabled && isOffline) {
       nextOffline[row.id] = state.offline[row.id] ?? now;
       if (!state.offline[row.id]) {
-        messages.push(`节点离线：${row.name} (${row.id})`);
+        messages.push(renderNotificationTemplate(config.template, "节点离线", row.name, row.id, { load1, lastSeen }));
       }
       continue;
     }
 
-    if (state.offline[row.id]) {
-      messages.push(`节点恢复：${row.name} (${row.id})`);
+    if (config.offline_enabled && state.offline[row.id]) {
+      messages.push(renderNotificationTemplate(config.template, "节点恢复", row.name, row.id, { load1, lastSeen }));
+    }
+
+    if (config.load_enabled && load1 !== null && load1 >= config.load_threshold) {
+      nextLoad[row.id] = state.load[row.id] ?? now;
+      if (!state.load[row.id]) {
+        messages.push(renderNotificationTemplate(config.template, "负载过高", row.name, row.id, { load1, lastSeen }));
+      }
+    } else if (config.load_enabled && state.load[row.id]) {
+      messages.push(renderNotificationTemplate(config.template, "负载恢复", row.name, row.id, { load1, lastSeen }));
     }
   }
 
@@ -1102,7 +1120,7 @@ async function scheduled(_controller: ScheduledController, env: Env): Promise<vo
     await sendNotifications(config, `Daoyi-Monitor\n${messages.join("\n")}`);
   }
 
-  await writeSetting(env, "notification_state", JSON.stringify({ offline: nextOffline }));
+  await writeSetting(env, "notification_state", JSON.stringify({ offline: nextOffline, load: nextLoad }));
 }
 
 async function readNotificationConfig(env: Env): Promise<NotificationConfig> {
@@ -1121,6 +1139,11 @@ function normalizeSiteConfig(raw: unknown, existing?: SiteConfig): SiteConfig {
     site_name: readLimitedString(value.site_name, existing?.site_name ?? "Daoyi Monitor", 80),
     site_description: readLimitedString(value.site_description, existing?.site_description ?? "Cloudflare Monitor", 160),
     agent_endpoint: readLimitedString(value.agent_endpoint, existing?.agent_endpoint ?? "", 2048),
+    agent_profile: readEnumString(value.agent_profile, existing?.agent_profile ?? "full", ["full", "small", "tiny"]),
+    agent_interval_sec: readIntegerRange(value.agent_interval_sec, existing?.agent_interval_sec ?? 3, 1, 300),
+    agent_channel: readLimitedString(value.agent_channel, existing?.agent_channel ?? "stable", 40),
+    agent_install_dir: readLimitedString(value.agent_install_dir, existing?.agent_install_dir ?? "/usr/local/bin", 200),
+    agent_config_file: readLimitedString(value.agent_config_file, existing?.agent_config_file ?? "/etc/daoyi-agent.env", 200),
     custom_head: readLimitedString(value.custom_head, existing?.custom_head ?? "", 20000),
     custom_body: readLimitedString(value.custom_body, existing?.custom_body ?? "", 20000),
   };
@@ -1131,10 +1154,29 @@ function readLimitedString(value: unknown, fallback: string, max: number): strin
   return value.length <= max ? value : value.slice(0, max);
 }
 
+function readEnumString(value: unknown, fallback: string, allowed: string[]): string {
+  return typeof value === "string" && allowed.includes(value) ? value : fallback;
+}
+
+function readIntegerRange(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function readNumberRange(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
 function normalizeNotificationConfig(raw: unknown, existing?: NotificationConfig): NotificationConfig {
   const value = isRecord(raw) ? raw : {};
   return {
     enabled: value.enabled === true,
+    template: readLimitedString(value.template, existing?.template ?? "{{event}}：{{name}}\nID: {{id}}\n负载: {{load1}}\n最后上报: {{last_seen}}", 2000),
+    offline_enabled: value.offline_enabled !== false,
+    offline_grace_sec: readIntegerRange(value.offline_grace_sec, existing?.offline_grace_sec ?? ONLINE_WINDOW_SECONDS, 30, 3600),
+    load_enabled: value.load_enabled === true,
+    load_threshold: readNumberRange(value.load_threshold, existing?.load_threshold ?? 5, 0.1, 1000),
     webhook_enabled: value.webhook_enabled === true,
     webhook_url: preserveSecret(value.webhook_url, existing?.webhook_url, 2048),
     telegram_enabled: value.telegram_enabled === true,
@@ -1161,17 +1203,25 @@ async function readNotificationState(env: Env): Promise<NotificationState> {
   const raw = await readSetting(env, "notification_state");
   const parsed = raw ? safeJsonParse(raw) : null;
 
-  if (!isRecord(parsed) || !isRecord(parsed.offline)) {
-    return { offline: {} };
+  if (!isRecord(parsed)) {
+    return { offline: {}, load: {} };
   }
 
-  const offline: Record<string, number> = {};
-  for (const [key, value] of Object.entries(parsed.offline)) {
+  return {
+    offline: readStateMap(parsed.offline),
+    load: readStateMap(parsed.load),
+  };
+}
+
+function readStateMap(raw: unknown): Record<string, number> {
+  const next: Record<string, number> = {};
+  if (!isRecord(raw)) return next;
+  for (const [key, value] of Object.entries(raw)) {
     if (typeof value === "number" && Number.isFinite(value)) {
-      offline[key] = value;
+      next[key] = value;
     }
   }
-  return { offline };
+  return next;
 }
 
 async function readSetting(env: Env, key: string): Promise<string | null> {
@@ -1326,6 +1376,28 @@ async function sendNotifications(config: NotificationConfig, message: string): P
   }
 
   await Promise.all(jobs);
+}
+
+function renderNotificationTemplate(
+  template: string,
+  event: string,
+  name: string,
+  id: string,
+  values: { load1: number | null; lastSeen: number },
+): string {
+  const map: Record<string, string> = {
+    event,
+    name,
+    id,
+    load1: values.load1 === null ? "-" : values.load1.toFixed(2),
+    last_seen: values.lastSeen > 0 ? new Date(values.lastSeen * 1000).toISOString() : "never",
+  };
+  return template.replaceAll(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_match, key: string) => map[key] ?? "");
+}
+
+function readMetricFromRecord(metrics: Record<string, unknown> | undefined, key: string): number | null {
+  const value = metrics?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 async function checkNotificationResponse(request: Promise<Response>, channel: string): Promise<Response> {

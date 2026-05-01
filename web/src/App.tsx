@@ -122,6 +122,14 @@ export default function App() {
   const publicOnlineCount = filteredPublicAgents.filter((agent) => agent.online).length;
   const cpuAverage = averageMetricAny(visibleAgents, ["cpu", "cpu_percent"]);
   const memoryAverage = averageRatioAny(visibleAgents, MEMORY_USED_KEYS, MEMORY_TOTAL_KEYS);
+  const diskAverage = averageRatioAny(visibleAgents, ["disk_used", "disk_usage"], ["disk_total"]);
+  const networkUpTotal = sumMetricAny(visibleAgents, ["network_up", "net_up", "upload_bps", "tx_bps"]);
+  const networkDownTotal = sumMetricAny(visibleAgents, ["network_down", "net_down", "download_bps", "rx_bps"]);
+  const trafficUpTotal = sumMetricAny(visibleAgents, ["network_total_up", "net_total_up", "total_upload", "tx_total"]);
+  const trafficDownTotal = sumMetricAny(visibleAgents, ["network_total_down", "net_total_down", "total_download", "rx_total"]);
+  const processTotal = sumMetricAny(visibleAgents, ["process_count", "processes"]);
+  const connectionTotal = sumMetricAny(visibleAgents, ["connection_count", "connections"]);
+  const loadAverage = averageMetricAny(visibleAgents, ["load1"]);
   const instanceAgent = useMemo(
     () => sortedVisibleAgents.find((agent) => agent.id === instanceId || agent.agent_id === instanceId) ?? null,
     [sortedVisibleAgents, instanceId]
@@ -476,16 +484,30 @@ export default function App() {
       {revealedSecret && (
         <SecretPanel
           secret={revealedSecret}
-          agentEndpoint={siteSettings.agent_endpoint}
+          site={siteSettings}
           copyingToken={copyingToken}
           copyingInstall={copyingInstall}
           onCopyToken={() => void copyText(revealedSecret.token, "token")}
-          onCopyInstall={() => void copyText(buildInstallCommand(revealedSecret.token, siteSettings.agent_endpoint), "install")}
+          onCopyInstall={() => void copyText(buildInstallCommand(revealedSecret.token, siteSettings), "install")}
           onClose={() => setRevealedSecret(null)}
         />
       )}
       {route === "/admin" && (
-        <Dashboard agents={visibleAgents} onlineCount={onlineCount} cpuAverage={cpuAverage} memoryAverage={memoryAverage} refresh={() => void loadAdminAgents()} />
+        <Dashboard
+          agents={visibleAgents}
+          onlineCount={onlineCount}
+          cpuAverage={cpuAverage}
+          memoryAverage={memoryAverage}
+          diskAverage={diskAverage}
+          networkUpTotal={networkUpTotal}
+          networkDownTotal={networkDownTotal}
+          trafficUpTotal={trafficUpTotal}
+          trafficDownTotal={trafficDownTotal}
+          processTotal={processTotal}
+          connectionTotal={connectionTotal}
+          loadAverage={loadAverage}
+          refresh={() => void loadAdminAgents()}
+        />
       )}
       {route === "/admin/agents" && (
         <AgentsPage
@@ -901,19 +923,44 @@ function AdminShell({ route, navigate, user, onLogout, children }: { route: Rout
   );
 }
 
-function Dashboard({ agents, onlineCount, cpuAverage, memoryAverage, refresh }: { agents: AgentRecord[]; onlineCount: number; cpuAverage: number | null; memoryAverage: number | null; refresh: () => void }) {
+function Dashboard(props: {
+  agents: AgentRecord[];
+  onlineCount: number;
+  cpuAverage: number | null;
+  memoryAverage: number | null;
+  diskAverage: number | null;
+  networkUpTotal: number | null;
+  networkDownTotal: number | null;
+  trafficUpTotal: number | null;
+  trafficDownTotal: number | null;
+  processTotal: number | null;
+  connectionTotal: number | null;
+  loadAverage: number | null;
+  refresh: () => void;
+}) {
+  const offlineCount = props.agents.length - props.onlineCount;
+  const groupsCount = new Set(props.agents.map((agent) => agent.group_name ?? "default")).size;
+  const staleCount = props.agents.filter((agent) => agent.last_seen && Date.now() / 1000 - agent.last_seen > 60).length;
   return (
     <div className="space-y-4">
       <Card>
         <Flex justify="between" align="center" mb="3">
           <div><Text size="1" color="gray">Overview</Text><Text as="div" size="6" weight="bold">服务器状态</Text></div>
-          <IconButton variant="ghost" onClick={refresh}><RefreshCcw size={16} /></IconButton>
+          <IconButton variant="ghost" onClick={props.refresh}><RefreshCcw size={16} /></IconButton>
         </Flex>
         <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
-          <TopCard title="当前在线" value={`${onlineCount} / ${agents.length}`} />
-          <TopCard title="节点分组" value={new Set(agents.map((agent) => agent.group_name ?? "default")).size} />
-          <TopCard title="平均 CPU" value={formatPercent(cpuAverage)} />
-          <TopCard title="平均内存" value={formatPercent(memoryAverage)} />
+          <TopCard title="当前在线" value={`${props.onlineCount} / ${props.agents.length}`} />
+          <TopCard title="离线节点" value={offlineCount} />
+          <TopCard title="点亮分组" value={groupsCount} />
+          <TopCard title="延迟上报" value={staleCount} />
+          <TopCard title="平均 CPU" value={formatPercent(props.cpuAverage)} />
+          <TopCard title="平均内存" value={formatPercent(props.memoryAverage)} />
+          <TopCard title="平均磁盘" value={formatPercent(props.diskAverage)} />
+          <TopCard title="平均负载" value={props.loadAverage === null ? "-" : props.loadAverage.toFixed(2)} />
+          <TopCard title="网络速率" value={`↑ ${formatSpeed(props.networkUpTotal)} / ↓ ${formatSpeed(props.networkDownTotal)}`} />
+          <TopCard title="总流量" value={`↑ ${formatBytes(props.trafficUpTotal)} / ↓ ${formatBytes(props.trafficDownTotal)}`} />
+          <TopCard title="进程总数" value={props.processTotal === null ? "-" : Math.round(props.processTotal).toLocaleString("zh-CN")} />
+          <TopCard title="连接总数" value={props.connectionTotal === null ? "-" : Math.round(props.connectionTotal).toLocaleString("zh-CN")} />
         </div>
       </Card>
     </div>
@@ -1049,6 +1096,22 @@ function SettingsPage(props: {
           <Field label="站点描述"><TextField.Root value={props.site.site_description} onChange={(event) => props.setSite((item) => ({ ...item, site_description: event.target.value }))} /></Field>
         </div>
         <Field label="Agent 连接地址"><TextField.Root placeholder="留空使用当前域名，例如 https://monitor.example.com" value={props.site.agent_endpoint} onChange={(event) => props.setSite((item) => ({ ...item, agent_endpoint: event.target.value }))} /></Field>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Field label="默认 Profile">
+            <select className="h-8 rounded border border-[var(--gray-7)] bg-transparent px-2 text-sm" value={props.site.agent_profile} onChange={(event) => props.setSite((item) => ({ ...item, agent_profile: event.target.value }))}>
+              <option value="full">full</option>
+              <option value="small">small</option>
+              <option value="tiny">tiny</option>
+            </select>
+          </Field>
+          <Field label="默认上报间隔(秒)"><TextField.Root type="number" min="1" max="300" value={String(props.site.agent_interval_sec)} onChange={(event) => props.setSite((item) => ({ ...item, agent_interval_sec: Number(event.target.value) || 3 }))} /></Field>
+          <Field label="更新通道"><TextField.Root value={props.site.agent_channel} onChange={(event) => props.setSite((item) => ({ ...item, agent_channel: event.target.value }))} /></Field>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="安装目录"><TextField.Root value={props.site.agent_install_dir} onChange={(event) => props.setSite((item) => ({ ...item, agent_install_dir: event.target.value }))} /></Field>
+          <Field label="配置文件"><TextField.Root value={props.site.agent_config_file} onChange={(event) => props.setSite((item) => ({ ...item, agent_config_file: event.target.value }))} /></Field>
+        </div>
+        <Text as="p" size="2" color="gray">Linux systemd 安装时，配置写入该 env 文件，service 使用 EnvironmentFile 读取。</Text>
       </Card>
 
       <Card className="space-y-4">
@@ -1087,6 +1150,14 @@ function SettingsPage(props: {
           <Flex gap="2"><Button variant="soft" onClick={props.testNotifications}>测试</Button><Button disabled={props.notificationSaving} onClick={props.saveNotifications}>{props.notificationSaving ? "保存中..." : "保存通知"}</Button></Flex>
         </Flex>
         <label className="flex items-center gap-2 text-sm"><Switch checked={form.enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, enabled: value }))} />启用通知</label>
+        <Field label="消息通知模板"><TextArea rows={5} value={form.template} onChange={(event) => setForm((item) => ({ ...item, template: event.target.value }))} /></Field>
+        <Text as="p" size="2" color="gray">可用变量：{"{{event}}"}、{"{{name}}"}、{"{{id}}"}、{"{{load1}}"}、{"{{last_seen}}"}</Text>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="flex items-center gap-2 text-sm"><Switch checked={form.offline_enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, offline_enabled: value }))} />离线/恢复通知</label>
+          <Field label="离线宽限(秒)"><TextField.Root type="number" min="30" max="3600" value={String(form.offline_grace_sec)} onChange={(event) => setForm((item) => ({ ...item, offline_grace_sec: Number(event.target.value) || 240 }))} /></Field>
+          <label className="flex items-center gap-2 text-sm"><Switch checked={form.load_enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, load_enabled: value }))} />负载/恢复通知</label>
+          <Field label="Load1 阈值"><TextField.Root type="number" min="0.1" step="0.1" value={String(form.load_threshold)} onChange={(event) => setForm((item) => ({ ...item, load_threshold: Number(event.target.value) || 5 }))} /></Field>
+        </div>
         <Separator size="4" />
         <label className="flex items-center gap-2 text-sm"><Switch checked={form.webhook_enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, webhook_enabled: value }))} />Webhook</label>
         <Field label="Webhook URL"><TextField.Root value={form.webhook_url ?? ""} onChange={(event) => setForm((item) => ({ ...item, webhook_url: event.target.value }))} /></Field>
@@ -1140,8 +1211,8 @@ function AuthFrame({ title, subtitle, children }: { title: string; subtitle: str
   );
 }
 
-function SecretPanel({ secret, agentEndpoint, copyingToken, copyingInstall, onCopyToken, onCopyInstall, onClose }: { secret: RevealedSecret; agentEndpoint: string; copyingToken: boolean; copyingInstall: boolean; onCopyToken: () => void; onCopyInstall: () => void; onClose: () => void }) {
-  const install = buildInstallCommand(secret.token, agentEndpoint);
+function SecretPanel({ secret, site, copyingToken, copyingInstall, onCopyToken, onCopyInstall, onClose }: { secret: RevealedSecret; site: SiteConfig; copyingToken: boolean; copyingInstall: boolean; onCopyToken: () => void; onCopyInstall: () => void; onClose: () => void }) {
+  const install = buildInstallCommand(secret.token, site);
   return (
     <Card className="mb-4 border-[var(--accent-7)] bg-[var(--accent-2)]">
       <Text size="1" color="gray">{secret.title}</Text>
@@ -1332,11 +1403,34 @@ function normalizeAgentRecord(payload: unknown): AgentRecord {
 }
 
 function defaultNotificationConfig(): NotificationConfig {
-  return { enabled: false, webhook_enabled: false, webhook_url: "", telegram_enabled: false, telegram_bot_token: "", telegram_chat_id: "" };
+  return {
+    enabled: false,
+    template: "{{event}}：{{name}}\nID: {{id}}\n负载: {{load1}}\n最后上报: {{last_seen}}",
+    offline_enabled: true,
+    offline_grace_sec: 240,
+    load_enabled: false,
+    load_threshold: 5,
+    webhook_enabled: false,
+    webhook_url: "",
+    telegram_enabled: false,
+    telegram_bot_token: "",
+    telegram_chat_id: ""
+  };
 }
 
 function defaultSiteConfig(): SiteConfig {
-  return { site_name: "Daoyi Monitor", site_description: "Cloudflare Monitor", agent_endpoint: "", custom_head: "", custom_body: "" };
+  return {
+    site_name: "Daoyi Monitor",
+    site_description: "Cloudflare Monitor",
+    agent_endpoint: "",
+    agent_profile: "full",
+    agent_interval_sec: 3,
+    agent_channel: "stable",
+    agent_install_dir: "/usr/local/bin",
+    agent_config_file: "/etc/daoyi-agent.env",
+    custom_head: "",
+    custom_body: ""
+  };
 }
 
 function applyCustomHead(html: string) {
@@ -1538,10 +1632,17 @@ function getOSImage(osString: string): string {
   ];
   return configs.find((config) => config.keywords.some((keyword) => normalized.includes(keyword)))?.image ?? "/assets/logo/linux.svg";
 }
-function buildInstallCommand(token: string, agentEndpoint = "") {
+function buildInstallCommand(token: string, site?: SiteConfig | string) {
+  const agentEndpoint = typeof site === "string" ? site : site?.agent_endpoint ?? "";
+  const profile = typeof site === "object" ? site.agent_profile : "full";
+  const interval = typeof site === "object" ? site.agent_interval_sec : 3;
+  const channel = typeof site === "object" ? site.agent_channel : "stable";
+  const installDir = typeof site === "object" ? site.agent_install_dir : "/usr/local/bin";
+  const configFile = typeof site === "object" ? site.agent_config_file : "/etc/daoyi-agent.env";
   const origin = (agentEndpoint.trim() || window.location.origin).replace(/\/+$/, "");
-  return `curl -fsSL ${origin}/install.sh | sh -s -- --endpoint '${origin}' --token '${token.replaceAll("'", "'\"'\"'")}' --profile full --interval 3 --installer-url '${origin}/install.sh'`;
+  return `curl -fsSL ${origin}/install.sh | sh -s -- --endpoint '${shellQuote(origin)}' --token '${token.replaceAll("'", "'\"'\"'")}' --profile '${shellQuote(profile)}' --interval '${interval}' --channel '${shellQuote(channel)}' --install-dir '${shellQuote(installDir)}' --config-file '${shellQuote(configFile)}' --installer-url '${shellQuote(`${origin}/install.sh`)}'`;
 }
+function shellQuote(value: string) { return value.replaceAll("'", "'\"'\"'"); }
 function emptyToNull(value: string) { const next = value.trim(); return next ? next : null; }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null; }
 function readString(value: unknown) { return typeof value === "string" && value.length > 0 ? value : undefined; }

@@ -17,8 +17,10 @@ import {
 import {
   Activity,
   Bell,
+  ChevronRight,
   Copy,
   Grid3X3,
+  GripVertical,
   Home,
   KeyRound,
   LogOut,
@@ -457,24 +459,24 @@ function PublicPage(props: {
 
   return (
     <main className="min-h-screen bg-[var(--accent-1)] text-[var(--gray-12)]">
-      <nav className="sticky top-0 z-10 border-b border-[var(--gray-5)] bg-[var(--accent-1)]/90 backdrop-blur">
-        <Flex justify="between" align="center" className="mx-auto max-w-7xl px-4 py-2">
-          <Flex align="center" gap="3">
-            <div className="brand-mark">D</div>
-            <div>
-              <Text weight="bold" size="5">Daoyi Monitor</Text>
-              <Text as="div" size="1" color="gray">Komari Monitor</Text>
-            </div>
-          </Flex>
-          <Flex gap="2">
+      <nav className="nav-bar sticky top-0 z-10 flex min-h-14 items-center gap-2 rounded-b-lg px-4 py-2 backdrop-blur">
+        <div className="mr-auto flex min-w-0 items-center">
+          <button className="flex min-w-0 items-center" onClick={() => props.navigate("/")}>
+            <span className="truncate text-[clamp(1.25rem,5vw,1.875rem)] font-bold leading-tight">Daoyi Monitor</span>
+          </button>
+          <div className="ml-3 hidden flex-row items-baseline md:flex">
+            <div className="mr-2 h-4 self-center border-r-2 border-[var(--accent-3)]" />
+            <span className="whitespace-nowrap text-base font-bold text-[var(--accent-8)]">Komari Monitor</span>
+          </div>
+        </div>
+        <Flex gap="2" align="center">
             <IconButton variant="ghost" title="刷新" onClick={props.refresh} disabled={props.loading}><RefreshCcw size={16} /></IconButton>
             <Button variant="soft" onClick={() => props.navigate("/admin")}>后台管理</Button>
-          </Flex>
         </Flex>
       </nav>
 
       <div className="mx-auto max-w-7xl py-4">
-        <Card className="mx-4">
+        <Card className="summary-card relative mx-4 text-sm md:text-base">
           <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(230px,1fr))]">
             <TopCard title="当前时间" value={props.clock.toLocaleTimeString("zh-CN", { hour12: false })} />
             <TopCard title="当前在线" value={`${props.onlineCount} / ${props.allCount}`} />
@@ -515,22 +517,25 @@ function NodeDisplay(props: {
 }) {
   return (
     <div className="w-full">
-      <Flex direction={{ initial: "column", sm: "row" }} justify="between" align={{ initial: "stretch", sm: "center" }} gap="4" className="mx-4 my-4 rounded-lg p-1">
-        <TextField.Root
-          id="public-search"
-          name="search"
-          placeholder="搜索节点名称、地区、系统..."
-          value={props.search}
-          onChange={(event) => props.setSearch(event.target.value)}
-          className="max-w-md flex-1"
-        >
-          <TextField.Slot><Search size={16} /></TextField.Slot>
-          {props.search && <TextField.Slot><IconButton size="1" variant="ghost" onClick={() => props.setSearch("")}><X size={12} /></IconButton></TextField.Slot>}
-        </TextField.Root>
+      <Flex direction={{ initial: "column", sm: "row" }} justify="between" align={{ initial: "stretch", sm: "center" }} gap="4" className="control-bar mx-4 mb-2 mt-4 rounded-lg p-4">
+        <Flex align="center" gap="2" className="relative max-w-md flex-1">
+          <TextField.Root
+            id="public-search"
+            name="search"
+            aria-label="搜索节点"
+            placeholder="搜索节点名称、地区、系统..."
+            value={props.search}
+            onChange={(event) => props.setSearch(event.target.value)}
+            className="search-box min-w-32 flex-1 pr-8"
+          >
+            <TextField.Slot><Search size={16} /></TextField.Slot>
+          </TextField.Root>
+          {props.search && <IconButton size="1" variant="ghost" className="search-clear-button absolute right-2 h-6 w-6" onClick={() => props.setSearch("")}><X size={12} /></IconButton>}
+        </Flex>
         <Flex align="center" gap="2">
-          <Text size="2" color="gray">显示模式</Text>
-          <IconButton variant={props.viewMode === "grid" ? "solid" : "soft"} onClick={() => props.setViewMode("grid")}><Grid3X3 size={16} /></IconButton>
-          <IconButton variant={props.viewMode === "table" ? "solid" : "soft"} onClick={() => props.setViewMode("table")}><Table2 size={16} /></IconButton>
+          <label className="whitespace-nowrap text-md text-muted-foreground">显示模式</label>
+          <IconButton className="view-switch-button" variant={props.viewMode === "grid" ? "solid" : "soft"} onClick={() => props.setViewMode("grid")}><Grid3X3 size={16} /></IconButton>
+          <IconButton className="view-switch-button" variant={props.viewMode === "table" ? "solid" : "soft"} onClick={() => props.setViewMode("table")}><Table2 size={16} /></IconButton>
         </Flex>
       </Flex>
       {props.groups.length > 0 && (
@@ -546,7 +551,7 @@ function NodeDisplay(props: {
         <Text size="2" color="gray">共 {props.total} 个服务器，{props.online} 个在线</Text>
       </Flex>
       {props.viewMode === "grid" ? (
-        <div className="grid w-full gap-4 p-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
+        <div className="grid w-full gap-2 p-4 md:gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
           {props.agents.map((agent) => <NodeCard key={agent.id} agent={agent} />)}
         </div>
       ) : (
@@ -560,11 +565,11 @@ function NodeCard({ agent }: { agent: AgentRecord }) {
   const memPct = memoryPercent(agent);
   const diskPct = diskPercent(agent);
   return (
-    <Card className="node-card hover:bg-[var(--accent-2)]">
+    <Card id={agent.id} className="node-card hover:bg-[var(--accent-2)] hover:shadow-lg">
       <Flex direction="column" gap="2">
         <Flex justify="between" align="center">
-          <Flex align="center" gap="2" className="min-w-0">
-            <span className="text-xl">{flagForAgent(agent)}</span>
+          <Flex justify="start" align="center" className="min-w-0 flex-1">
+            <FlagImage agent={agent} />
             <div className="min-w-0">
               <Text as="div" weight="bold" size="4" className="truncate">{agent.name}</Text>
               <Text as="div" size="1" color="gray" className="truncate">{tagLine(agent)}</Text>
@@ -573,7 +578,13 @@ function NodeCard({ agent }: { agent: AgentRecord }) {
           <Badge color={agent.online ? "green" : "red"} variant="soft">{agent.online ? "在线" : "离线"}</Badge>
         </Flex>
         <Separator size="4" />
-        <InfoRow label="OS" value={osText(agent)} />
+        <Flex justify="between" gap="3">
+          <Text size="2" color="gray" className="shrink-0">OS</Text>
+          <Flex align="center" justify="end" className="min-w-0 flex-1">
+            <OSImage agent={agent} />
+            <Text size="2" className="truncate">{osText(agent)}</Text>
+          </Flex>
+        </Flex>
         <InfoRow label="地区" value={locationText(agent)} />
         <UsageBar label="CPU" value={cpuPercent(agent)} />
         <UsageBar label="内存" value={memPct} hint={`${formatMetricBytes(agent, MEMORY_USED_KEYS)} / ${formatMetricBytes(agent, MEMORY_TOTAL_KEYS)}`} />
@@ -588,27 +599,45 @@ function NodeCard({ agent }: { agent: AgentRecord }) {
 
 function NodeTable({ agents }: { agents: AgentRecord[] }) {
   return (
-    <div className="mx-4 overflow-x-auto rounded-lg border border-[var(--gray-5)]">
-      <table className="w-full min-w-[760px] text-sm">
-        <thead className="bg-[var(--accent-2)] text-[var(--gray-11)]">
+    <div className="node-table-container mx-4 overflow-x-auto rounded-xl">
+      <table className="w-full min-w-[1040px] text-sm">
+        <thead className="bg-[var(--accent-4)] text-[var(--gray-11)]">
           <tr>
-            <th className="p-3 text-left">节点</th>
+            <th className="w-[24px] p-3"></th>
+            <th className="w-[220px] p-3 text-left">名称</th>
+            <th className="p-3 text-left">OS</th>
             <th className="p-3 text-left">状态</th>
             <th className="p-3 text-left">CPU</th>
             <th className="p-3 text-left">内存</th>
-            <th className="p-3 text-left">网络</th>
-            <th className="p-3 text-left">运行</th>
+            <th className="p-3 text-left">磁盘</th>
+            <th className="p-3 text-center">上传</th>
+            <th className="p-3 text-center">下载</th>
+            <th className="p-3 text-center">总上传</th>
+            <th className="p-3 text-center">总下载</th>
           </tr>
         </thead>
         <tbody>
           {agents.map((agent) => (
-            <tr key={agent.id} className="border-t border-[var(--gray-4)] hover:bg-[var(--accent-2)]">
-              <td className="p-3"><Text weight="medium">{flagForAgent(agent)} {agent.name}</Text><Text as="div" size="1" color="gray">{locationText(agent)} · {osText(agent)}</Text></td>
+            <tr key={agent.id} className="table-row-hover border-t border-[var(--gray-4)] hover:bg-[var(--accent-2)]">
+              <td className="p-3"><IconButton variant="ghost" size="1" className="expand-button"><ChevronRight size={16} /></IconButton></td>
+              <td className="node-name-cell p-3">
+                <Flex align="center" gap="1">
+                  <FlagImage agent={agent} />
+                  <div className="min-w-0">
+                    <Text weight="bold" size="3" className="truncate">{agent.name}</Text>
+                    <Text as="div" size="1" color="gray" className="truncate">{locationText(agent)}</Text>
+                  </div>
+                </Flex>
+              </td>
+              <td className="p-3"><OSImage agent={agent} /></td>
               <td className="p-3"><Badge color={agent.online ? "green" : "red"} variant="soft">{agent.online ? "在线" : "离线"}</Badge></td>
-              <td className="p-3">{formatPercent(cpuPercent(agent))}</td>
-              <td className="p-3">{formatPercent(memoryPercent(agent))}</td>
-              <td className="p-3">↑ {formatSpeed(uploadSpeed(agent))}<br />↓ {formatSpeed(downloadSpeed(agent))}</td>
-              <td className="p-3">{formatUptime(agent)}</td>
+              <td className="p-3"><div className="w-[100px]"><UsageBar label="" value={cpuPercent(agent)} compact /></div></td>
+              <td className="p-3"><div className="w-[100px]"><UsageBar label="" value={memoryPercent(agent)} compact /></div></td>
+              <td className="p-3"><div className="w-[100px]"><UsageBar label="" value={diskPercent(agent)} compact /></div></td>
+              <td className="p-3 text-center">↑{formatBytes(uploadSpeed(agent))}/s</td>
+              <td className="p-3 text-center">↓{formatBytes(downloadSpeed(agent))}/s</td>
+              <td className="p-3 text-center">↑{formatBytes(totalUpload(agent))}</td>
+              <td className="p-3 text-center">↓{formatBytes(totalDownload(agent))}</td>
             </tr>
           ))}
         </tbody>
@@ -625,13 +654,13 @@ function AdminShell({ route, navigate, user, onLogout, children }: { route: Rout
     { route: "/admin/settings" as Route, label: "通知", icon: Bell }
   ];
   return (
-    <div className="grid h-screen w-screen grid-rows-[auto_1fr] overflow-hidden bg-[var(--accent-3)] md:grid-cols-[auto_1fr]">
+    <div className="grid h-screen w-screen grid-rows-[auto_1fr] overflow-auto bg-[var(--accent-1)] md:grid-cols-[auto_1fr]">
       <nav className="col-span-full border-b border-[var(--gray-5)] bg-[var(--accent-1)]">
         <Flex justify="between" align="center" className="px-3 py-2">
           <Flex gap="3" align="center">
             <IconButton variant="ghost" onClick={() => setSidebarOpen((value) => !value)}><Menu size={18} /></IconButton>
             <button className="text-xl font-bold" onClick={() => navigate("/")}>Daoyi</button>
-            <Text size="1" color="gray">Cloudflare Monitor</Text>
+            <Text size="1" color="gray" className="hidden md:block">Cloudflare Monitor</Text>
           </Flex>
           <Flex gap="2" align="center">
             <Text size="2" color="gray">{user?.username ?? ""}</Text>
@@ -655,7 +684,7 @@ function AdminShell({ route, navigate, user, onLogout, children }: { route: Rout
           </button>
         </Flex>
       </aside>
-      <main className="overflow-auto bg-[var(--accent-1)] p-3 md:p-4">{children}</main>
+      <main className="overflow-auto bg-[var(--accent-1)] p-2 md:p-4">{children}</main>
     </div>
   );
 }
@@ -724,28 +753,49 @@ function AgentsPage(props: {
           </div>
         </Card>
       )}
-      <Card>
-        <Flex justify="between" align="center" mb="3">
-          <div><Text as="div" weight="bold">客户端</Text><Text size="2" color="gray">{props.agents.length} 台，{props.onlineCount} 台在线</Text></div>
-        </Flex>
+      <div className="rounded-md overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px] text-sm">
-            <thead className="text-[var(--gray-11)]">
-              <tr><th className="p-2 text-left">名称</th><th className="p-2 text-left">状态</th><th className="p-2 text-left">CPU</th><th className="p-2 text-left">内存</th><th className="p-2 text-left">Token</th><th className="p-2 text-left">最后上报</th><th className="p-2 text-left">操作</th></tr>
+          <table className="w-full min-w-[980px] text-sm">
+            <thead className="bg-[var(--accent-4)] text-[var(--gray-11)]">
+              <tr>
+                <th className="p-2"></th>
+                <th className="p-2 text-left"><input aria-label="全选客户端" type="checkbox" /></th>
+                <th className="p-2 text-left">名称</th>
+                <th className="p-2 text-left">地区</th>
+                <th className="p-2 text-left">系统</th>
+                <th className="p-2 text-left">状态</th>
+                <th className="p-2 text-left">Token</th>
+                <th className="p-2 text-left">分组</th>
+                <th className="p-2 text-left">备注</th>
+                <th className="p-2 text-left">最后上报</th>
+                <th className="p-2 text-left"></th>
+              </tr>
             </thead>
             <tbody>
               {props.agents.map((agent) => (
-                <tr key={agent.id} className="border-t border-[var(--gray-4)]">
-                  <td className="p-2"><Text weight="medium">{agent.name}</Text><Text as="div" size="1" color="gray">{agent.group_name ?? "default"} / {agent.agent_id}</Text></td>
-                  <td className="p-2"><Badge color={agent.online ? "green" : "red"} variant="soft">{agent.online ? "Online" : "Offline"}</Badge></td>
-                  <td className="p-2">{formatPercent(cpuPercent(agent))}</td>
-                  <td className="p-2">{formatPercent(memoryPercent(agent))}</td>
+                <tr key={agent.id} className="border-t border-[var(--gray-4)] hover:bg-[var(--accent-2)]">
+                  <td className="p-2"><GripVertical size={16} color="var(--gray-8)" /></td>
+                  <td className="p-2"><input aria-label={`选择 ${agent.name}`} type="checkbox" /></td>
+                  <td className="p-2">
+                    <Flex align="center" gap="1">
+                      <FlagImage agent={agent} />
+                      <div className="min-w-0">
+                        <Text weight="bold" size="3" className="truncate">{agent.name}</Text>
+                        <Text as="div" size="1" color="gray" className="truncate">{agent.agent_id}</Text>
+                      </div>
+                    </Flex>
+                  </td>
+                  <td className="p-2">{locationText(agent)}</td>
+                  <td className="p-2"><Flex align="center"><OSImage agent={agent} /><Text size="2">{osText(agent)}</Text></Flex></td>
+                  <td className="p-2"><Badge color={agent.online ? "green" : "red"} variant="soft" size="1">{agent.online ? "在线" : "离线"}</Badge></td>
                   <td className="p-2"><code>{agent.token_preview}</code></td>
+                  <td className="p-2"><Text size="2" className="block max-w-[150px] truncate">{agent.group_name ?? "default"}</Text></td>
+                  <td className="p-2"><Text size="2" className="block max-w-[150px] truncate">{agent.remark ?? agent.public_remark ?? "-"}</Text></td>
                   <td className="p-2">{formatRelativeAge(agent.last_seen)}<Text as="div" size="1" color="gray">{formatLastSeen(agent.last_seen)}</Text></td>
                   <td className="p-2">
                     <Flex gap="2">
-                      <Button size="1" variant="soft" disabled={props.rotateTargetId === agent.id} onClick={() => props.rotateToken(agent)}><KeyRound size={14} />{props.rotateTargetId === agent.id ? "轮换中" : "轮换"}</Button>
-                      <Button size="1" color="red" variant="soft" onClick={() => props.setDeleteTarget(agent)}><Trash2 size={14} />删除</Button>
+                      <IconButton size="1" variant="ghost" title="轮换 Token" disabled={props.rotateTargetId === agent.id} onClick={() => props.rotateToken(agent)}><KeyRound size={16} /></IconButton>
+                      <IconButton size="1" color="red" variant="ghost" title="删除" onClick={() => props.setDeleteTarget(agent)}><Trash2 size={16} /></IconButton>
                     </Flex>
                   </td>
                 </tr>
@@ -753,7 +803,7 @@ function AgentsPage(props: {
             </tbody>
           </table>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }
@@ -857,9 +907,19 @@ function TopCard({ title, value }: { title: string; value: string | number }) {
   return <div className="min-w-52"><Text as="div" size="2" color="gray">{title}</Text><Text as="div" weight="medium" size="3">{value}</Text></div>;
 }
 
-function UsageBar({ label, value, hint }: { label: string; value: number | null; hint?: string }) {
+function UsageBar({ label, value, hint, compact = false }: { label: string; value: number | null; hint?: string; compact?: boolean }) {
   const next = value ?? 0;
   const color = next >= 80 ? "var(--red-9)" : next >= 60 ? "var(--orange-9)" : "var(--green-9)";
+  if (compact) {
+    return (
+      <div className="w-full">
+        <div className="mb-0.5 h-1.5 w-full overflow-hidden rounded bg-[var(--gray-5)]">
+          <div className="h-full rounded transition-[width]" style={{ width: `${Math.max(0, Math.min(100, next))}%`, backgroundColor: color }} />
+        </div>
+        <label className="text-sm text-[var(--gray-11)]">{formatPercent(value)}</label>
+      </div>
+    );
+  }
   return (
     <div className="w-full">
       <Flex justify="between" align="center"><Text size="2" color="gray">{label}</Text><Text size="2" weight="medium">{formatPercent(value)}</Text></Flex>
@@ -1051,7 +1111,7 @@ function formatBytes(value: number | null) {
   while (next >= 1024 && index < units.length - 1) { next /= 1024; index += 1; }
   return `${next.toFixed(next >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
-function formatSpeed(value: number | null) { return value === null ? "-" : `${formatBytes(value)}/s`; }
+function formatSpeed(value: number | null) { return value === null ? "0 B/s" : `${formatBytes(value)}/s`; }
 function formatLastSeen(value: number | null) { return value ? new Date(value * 1000).toLocaleString("zh-CN") : "未上报"; }
 function formatRelativeAge(value: number | null) {
   if (!value) return "等待首报";
@@ -1080,6 +1140,20 @@ function osText(agent: AgentRecord) {
   return `${system} / ${arch}`;
 }
 
+function OSImage({ agent }: { agent: AgentRecord }) {
+  const os = readStringMetricAny(agent, ["distro", "distribution", "os_name", "os"]) ?? tagOs(agent) ?? "";
+  return <img src={getOSImage(os)} alt={os || "linux"} className="mr-2 h-5 w-5 object-contain" loading="lazy" />;
+}
+
+function FlagImage({ agent, size = "h-6 w-6" }: { agent: AgentRecord; size?: string }) {
+  const code = countryCode(agent) ?? "UN";
+  return (
+    <span className={`m-2 inline-flex shrink-0 self-center ${size}`} aria-label={`地区旗帜: ${code}`}>
+      <img src={`/assets/flags/${code}.svg`} alt={code} className="h-full w-full object-contain" loading="lazy" />
+    </span>
+  );
+}
+
 function tagLine(agent: AgentRecord) { return [agent.group_name ?? "default", agent.tags].filter(Boolean).join(" / "); }
 function tagOs(agent: AgentRecord) { return splitTags(agent.tags).find((tag) => ["linux", "freebsd", "darwin", "macos", "windows"].includes(tag.toLowerCase())) ?? null; }
 function tagArch(agent: AgentRecord) { return splitTags(agent.tags).find((tag) => /x86|amd64|arm|aarch|mips|riscv/i.test(tag)) ?? null; }
@@ -1100,6 +1174,27 @@ function flagForAgent(agent: AgentRecord) {
   const code = countryCode(agent);
   if (!code) return "🌐";
   return [...code].map((char) => String.fromCodePoint(0x1f1e6 + char.charCodeAt(0) - 65)).join("");
+}
+function getOSImage(osString: string): string {
+  const normalized = osString.toLowerCase().trim();
+  const configs = [
+    { image: "/assets/logo/os-alma.svg", keywords: ["alma", "almalinux"] },
+    { image: "/assets/logo/os-alpine.webp", keywords: ["alpine"] },
+    { image: "/assets/logo/os-armbian.svg", keywords: ["armbian"] },
+    { image: "/assets/logo/os-centos.svg", keywords: ["centos"] },
+    { image: "/assets/logo/os-debian.svg", keywords: ["debian", "deb"] },
+    { image: "/assets/logo/os-freebsd.svg", keywords: ["freebsd", "bsd"] },
+    { image: "/assets/logo/os-ubuntu.svg", keywords: ["ubuntu"] },
+    { image: "/assets/logo/os-windows.svg", keywords: ["windows", "win"] },
+    { image: "/assets/logo/os-arch.svg", keywords: ["arch", "archlinux"] },
+    { image: "/assets/logo/os-openwrt.svg", keywords: ["openwrt", "immortalwrt"] },
+    { image: "/assets/logo/os-rocky.svg", keywords: ["rocky"] },
+    { image: "/assets/logo/os-fedora.svg", keywords: ["fedora"] },
+    { image: "/assets/logo/os-openSUSE.svg", keywords: ["opensuse", "suse"] },
+    { image: "/assets/logo/os-redhat.svg", keywords: ["redhat", "rhel"] },
+    { image: "/assets/logo/os-macos.svg", keywords: ["macos", "darwin"] },
+  ];
+  return configs.find((config) => config.keywords.some((keyword) => normalized.includes(keyword)))?.image ?? "/assets/logo/linux.svg";
 }
 function buildInstallCommand(token: string) {
   const origin = window.location.origin;

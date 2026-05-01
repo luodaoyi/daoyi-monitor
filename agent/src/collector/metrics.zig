@@ -14,6 +14,7 @@ pub const HelloMessage = struct {
 pub const ReportMessage = struct {
     agent_id: []const u8,
     collected_at_unix: i64,
+    cpu_percent: f64,
     uptime_seconds: u64,
     load1: f64,
     memory_total_bytes: u64,

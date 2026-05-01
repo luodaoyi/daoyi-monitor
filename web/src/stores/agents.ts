@@ -50,6 +50,10 @@ export function applyRealtimeEvent(event: AdminEvent): void {
     return;
   }
 
+  if (event.type !== "latest" && event.type !== "offline") {
+    return;
+  }
+
   agents.update((items) => {
     if (event.type === "offline") {
       return items.map((item) =>

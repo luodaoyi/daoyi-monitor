@@ -20,14 +20,16 @@ pub fn main() !void {
 
     var hello_buffer: [1024]u8 = undefined;
     const hello_payload = try encodeHello(&hello_buffer, hello);
+    var collector_state = linux.CollectorState{};
 
     if (isWebSocketEndpoint(cfg.endpoint)) {
+        if (cfg.token.len == 0) return error.MissingAgentToken;
         var client = try websocket.Client.connect(allocator, cfg.endpoint, cfg.token);
         defer client.close();
 
         try client.sendText(hello_payload);
         while (true) {
-            const report = try linux.collect(allocator, &cfg);
+            const report = try linux.collect(allocator, &cfg, &collector_state);
             var report_buffer: [1024]u8 = undefined;
             const report_payload = try encodeReport(&report_buffer, report);
             try client.sendText(report_payload);
@@ -36,7 +38,7 @@ pub fn main() !void {
         return;
     }
 
-    const report = try linux.collect(allocator, &cfg);
+    const report = try linux.collect(allocator, &cfg, &collector_state);
     var report_buffer: [1024]u8 = undefined;
     const report_payload = try encodeReport(&report_buffer, report);
 

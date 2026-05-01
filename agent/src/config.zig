@@ -29,8 +29,8 @@ pub const Config = struct {
     pub fn init(allocator: std.mem.Allocator, profile: BuildProfile) !Config {
         return .{
             .allocator = allocator,
-            .endpoint = try envOrDefault(allocator, "DAOYI_AGENT_ENDPOINT", "wss://example.invalid/ws/agent"),
-            .token = try envOrDefault(allocator, "DAOYI_AGENT_TOKEN", "demo-token"),
+            .endpoint = try envOrDefault(allocator, "DAOYI_AGENT_ENDPOINT", ""),
+            .token = try envOrDefault(allocator, "DAOYI_AGENT_TOKEN", ""),
             .agent_id = try envOrDefault(allocator, "DAOYI_AGENT_ID", "demo-agent"),
             .hostname = try detectHostname(allocator),
             .interval_seconds = try intervalFromEnv("DAOYI_AGENT_INTERVAL_SEC", 3),
@@ -122,5 +122,6 @@ fn intervalFromEnv(key: []const u8, fallback: u32) !u32 {
     };
     defer allocator.free(raw);
 
-    return std.fmt.parseInt(u32, std.mem.trim(u8, raw, " \t\r\n"), 10);
+    const value = try std.fmt.parseInt(u32, std.mem.trim(u8, raw, " \t\r\n"), 10);
+    return std.math.clamp(value, 1, 3600);
 }

@@ -32,6 +32,8 @@ pub fn writeReport(writer: anytype, report: metrics.ReportMessage) !void {
     try writeStringField(writer, "agent_id", report.agent_id);
     try writeI64Field(writer, "time", report.collected_at_unix);
     try writer.writeAll(",\"metrics\":{");
+    try writeNamedF64(writer, "cpu", report.cpu_percent);
+    try writer.writeAll(",");
     try writeNamedU64(writer, "uptime_sec", report.uptime_seconds);
     try writer.writeAll(",");
     try writeNamedF64(writer, "load1", report.load1);

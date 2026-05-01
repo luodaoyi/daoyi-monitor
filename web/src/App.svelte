@@ -67,8 +67,8 @@
   $: onlineCount = $agents.filter((item) => item.online).length;
   $: visibleAgents = $agents.filter((item) => !item.hidden);
   $: hiddenCount = $agents.length - visibleAgents.length;
-  $: cpuAverage = averageMetric(visibleAgents, "cpu");
-  $: memoryAverage = averageRatio(visibleAgents, "mem_used", "mem_total");
+  $: cpuAverage = averageMetricAny(visibleAgents, ["cpu", "cpu_percent"]);
+  $: memoryAverage = averageRatioAny(visibleAgents, ["mem_used", "memory_used"], ["mem_total", "memory_total"]);
   $: lastReportAt = latestLastSeen($agents);
   $: previewAgents = $agents.slice(0, 6);
 
@@ -489,8 +489,12 @@
   }
 
   function averageMetric(items: AgentRecord[], key: string): number | null {
+    return averageMetricAny(items, [key]);
+  }
+
+  function averageMetricAny(items: AgentRecord[], keys: string[]): number | null {
     const values = items
-      .map((item) => readMetric(item, key))
+      .map((item) => readMetricAny(item, keys))
       .filter((value): value is number => value !== null);
 
     if (values.length === 0) return null;
@@ -498,10 +502,14 @@
   }
 
   function averageRatio(items: AgentRecord[], usedKey: string, totalKey: string): number | null {
+    return averageRatioAny(items, [usedKey], [totalKey]);
+  }
+
+  function averageRatioAny(items: AgentRecord[], usedKeys: string[], totalKeys: string[]): number | null {
     const values = items
       .map((item) => {
-        const used = readMetric(item, usedKey);
-        const total = readMetric(item, totalKey);
+        const used = readMetricAny(item, usedKeys);
+        const total = readMetricAny(item, totalKeys);
         if (used === null || total === null || total <= 0) {
           return null;
         }
@@ -523,8 +531,15 @@
   }
 
   function readMetric(agent: AgentRecord, key: string): number | null {
-    const value = agent.metrics?.[key];
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
+    return readMetricAny(agent, [key]);
+  }
+
+  function readMetricAny(agent: AgentRecord, keys: string[]): number | null {
+    for (const key of keys) {
+      const value = agent.metrics?.[key];
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+    }
+    return null;
   }
 
   function formatPercent(value: number | null): string {
@@ -772,7 +787,7 @@
           <article class="stat-card">
             <span>平均内存占用</span>
             <strong>{formatPercent(memoryAverage)}</strong>
-            <small>取 `mem_used / mem_total`</small>
+            <small>取内存 used / total</small>
           </article>
         </section>
 
@@ -806,11 +821,11 @@
                   <dl>
                     <div>
                       <dt>CPU</dt>
-                      <dd>{formatPercent(readMetric(agent, "cpu"))}</dd>
+                      <dd>{formatPercent(readMetricAny(agent, ["cpu", "cpu_percent"]))}</dd>
                     </div>
                     <div>
                       <dt>内存</dt>
-                      <dd>{formatBytes(readMetric(agent, "mem_used"))}</dd>
+                      <dd>{formatBytes(readMetricAny(agent, ["mem_used", "memory_used"]))}</dd>
                     </div>
                     <div>
                       <dt>最后上报</dt>
@@ -956,8 +971,8 @@
                       </td>
                       <td>
                         <div class="cell-lines">
-                          <span>CPU {formatPercent(readMetric(agent, "cpu"))}</span>
-                          <small>Mem {formatBytes(readMetric(agent, "mem_used"))}</small>
+                          <span>CPU {formatPercent(readMetricAny(agent, ["cpu", "cpu_percent"]))}</span>
+                          <small>Mem {formatBytes(readMetricAny(agent, ["mem_used", "memory_used"]))}</small>
                         </div>
                       </td>
                       <td>

@@ -56,7 +56,13 @@ export type AgentStatus = {
 export type AdminEvent =
   | { type: "snapshot"; agents: AgentStatus[] }
   | { type: "latest"; data: AgentStatus }
-  | { type: "offline"; agent_id: string };
+  | { type: "offline"; agent_id: string }
+  | { type: "connected"; role: string; connectedAt: string }
+  | { type: "agent_connected"; agentId: string | null; at: string }
+  | { type: "peer_disconnected"; role: string; agentId: string | null; adminId: string | null; at: string }
+  | { type: "peer_error"; role: string; agentId: string | null; adminId: string | null; error: string; at: string }
+  | { type: "ack"; event?: string; at: string }
+  | { type: "pong"; at: string };
 
 export type NotificationConfig = {
   enabled: boolean;

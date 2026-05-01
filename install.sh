@@ -185,7 +185,7 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
-  as_root sh -c "cat > /etc/systemd/system/daoyi-agent-update.service" <<'EOF'
+  as_root sh -c "cat > /etc/systemd/system/daoyi-agent-update.service" <<EOF
 [Unit]
 Description=Update Daoyi Monitor Agent
 After=network-online.target
@@ -193,8 +193,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/daoyi-agent.env
-ExecStart=/bin/sh -c 'curl -fsSL https://raw.githubusercontent.com/luodaoyi/daoyi-monitor/main/install.sh | sh -s -- --endpoint "$DAOYI_AGENT_ENDPOINT" --token "$DAOYI_AGENT_TOKEN" --profile "${DAOYI_AGENT_PROFILE:-full}" --manifest-url "$DAOYI_AGENT_UPDATE_MANIFEST_URL"'
+EnvironmentFile=$CONFIG_FILE
+ExecStart=/bin/sh -c 'url=https://raw.githubusercontent.com/luodaoyi/daoyi-monitor/main/install.sh; if command -v curl >/dev/null 2>&1; then curl -fsSL "\$url"; else wget -qO- "\$url"; fi | sh -s -- --endpoint "\$DAOYI_AGENT_ENDPOINT" --token "\$DAOYI_AGENT_TOKEN" --profile "\${DAOYI_AGENT_PROFILE:-full}" --manifest-url "\$DAOYI_AGENT_UPDATE_MANIFEST_URL" --install-dir "$INSTALL_DIR" --config-file "$CONFIG_FILE"'
 EOF
   as_root sh -c "cat > /etc/systemd/system/daoyi-agent-update.timer" <<'EOF'
 [Unit]

@@ -75,6 +75,16 @@ export class Hub {
       return;
     }
 
+    if (attachment.role === "agent" && attachment.agentId) {
+      this.latestByAgent.delete(attachment.agentId);
+      this.broadcastToAdmins({
+        type: "offline",
+        agent_id: attachment.agentId,
+        at: new Date().toISOString(),
+      });
+      return;
+    }
+
     this.broadcastToAdmins({
       type: "peer_disconnected",
       role: attachment.role,
@@ -301,12 +311,15 @@ export class Hub {
       merged.set(row.id, snapshot);
     }
 
+    const connectedAgentIds = new Set(this.getConnectedAgentIds());
+
     for (const [agentId, latest] of this.latestByAgent) {
+      if (!connectedAgentIds.has(agentId)) continue;
       const existing = merged.get(agentId) ?? {};
       merged.set(agentId, { ...existing, ...latest });
     }
 
-    for (const agentId of this.getConnectedAgentIds()) {
+    for (const agentId of connectedAgentIds) {
       const existing = merged.get(agentId) ?? {
         id: agentId,
         agent_id: agentId,

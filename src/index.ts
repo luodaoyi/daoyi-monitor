@@ -6,6 +6,7 @@ const app = new Hono<{ Bindings: Env }>();
 const SESSION_COOKIE = "daoyi_session";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const ONLINE_WINDOW_SECONDS = 240;
+const SECRET_MASK = "********";
 
 app.onError((err, c) => {
   return c.json<ApiResponse<null>>(
@@ -108,16 +109,17 @@ app.get("/api/auth/me", async (c) => {
 app.get("/api/settings/notifications", async (c) => {
   const user = await requireAdmin(c.env, c.req.raw);
   if (!user.ok) return user.response;
-  return json(await readNotificationConfig(c.env));
+  return json(maskNotificationConfig(await readNotificationConfig(c.env)));
 });
 
 app.put("/api/settings/notifications", async (c) => {
   const user = await requireAdmin(c.env, c.req.raw);
   if (!user.ok) return user.response;
   const body = await readJson<Partial<NotificationConfig>>(c.req.raw);
-  const next = normalizeNotificationConfig(body);
+  const existing = await readNotificationConfig(c.env);
+  const next = normalizeNotificationConfig(body, existing);
   await writeSetting(c.env, "notification_config", JSON.stringify(next));
-  return json(next);
+  return json(maskNotificationConfig(next));
 });
 
 app.post("/api/settings/notifications/test", async (c) => {
@@ -737,16 +739,30 @@ async function readNotificationConfig(env: Env): Promise<NotificationConfig> {
   return normalizeNotificationConfig(raw ? safeJsonParse(raw) : null);
 }
 
-function normalizeNotificationConfig(raw: unknown): NotificationConfig {
+function normalizeNotificationConfig(raw: unknown, existing?: NotificationConfig): NotificationConfig {
   const value = isRecord(raw) ? raw : {};
   return {
     enabled: value.enabled === true,
     webhook_enabled: value.webhook_enabled === true,
-    webhook_url: nullableStringLoose(value.webhook_url, 2048),
+    webhook_url: preserveSecret(value.webhook_url, existing?.webhook_url, 2048),
     telegram_enabled: value.telegram_enabled === true,
-    telegram_bot_token: nullableStringLoose(value.telegram_bot_token, 256),
-    telegram_chat_id: nullableStringLoose(value.telegram_chat_id, 128),
+    telegram_bot_token: preserveSecret(value.telegram_bot_token, existing?.telegram_bot_token, 256),
+    telegram_chat_id: preserveSecret(value.telegram_chat_id, existing?.telegram_chat_id, 128),
   };
+}
+
+function maskNotificationConfig(config: NotificationConfig): NotificationConfig {
+  return {
+    ...config,
+    webhook_url: config.webhook_url ? SECRET_MASK : null,
+    telegram_bot_token: config.telegram_bot_token ? SECRET_MASK : null,
+    telegram_chat_id: config.telegram_chat_id ? SECRET_MASK : null,
+  };
+}
+
+function preserveSecret(value: unknown, existing: string | null | undefined, max: number): string | null {
+  if (value === SECRET_MASK) return existing ?? null;
+  return nullableStringLoose(value, max);
 }
 
 async function readNotificationState(env: Env): Promise<NotificationState> {
@@ -791,18 +807,20 @@ async function sendNotifications(config: NotificationConfig, message: string): P
   const jobs: Promise<Response>[] = [];
 
   if (config.webhook_enabled && config.webhook_url) {
-    jobs.push(
+    jobs.push(checkNotificationResponse(
       fetch(config.webhook_url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: message, content: message }),
+        signal: AbortSignal.timeout(5000),
       }),
-    );
+      "webhook",
+    ));
   }
 
   if (config.telegram_enabled && config.telegram_bot_token && config.telegram_chat_id) {
     const url = `https://api.telegram.org/bot${encodeURIComponent(config.telegram_bot_token)}/sendMessage`;
-    jobs.push(
+    jobs.push(checkNotificationResponse(
       fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -811,11 +829,25 @@ async function sendNotifications(config: NotificationConfig, message: string): P
           text: message,
           disable_web_page_preview: true,
         }),
+        signal: AbortSignal.timeout(5000),
       }),
-    );
+      "telegram",
+    ));
+  }
+
+  if (jobs.length === 0) {
+    throw new Error("No notification channel configured.");
   }
 
   await Promise.all(jobs);
+}
+
+async function checkNotificationResponse(request: Promise<Response>, channel: string): Promise<Response> {
+  const response = await request;
+  if (!response.ok) {
+    throw new Error(`${channel} notification failed: ${response.status}`);
+  }
+  return response;
 }
 
 function agentFromRow(row: AgentRow): AgentDto {

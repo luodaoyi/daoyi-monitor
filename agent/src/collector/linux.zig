@@ -15,10 +15,20 @@ const MemorySnapshot = struct {
     swap_used_bytes: u64,
 };
 
-pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config) !metrics.ReportMessage {
+const CpuSnapshot = struct {
+    total: u64,
+    idle: u64,
+};
+
+pub const CollectorState = struct {
+    last_cpu: ?CpuSnapshot = null,
+};
+
+pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?*CollectorState) !metrics.ReportMessage {
     var report = metrics.ReportMessage{
         .agent_id = cfg.agent_id,
         .collected_at_unix = std.time.timestamp(),
+        .cpu_percent = 0,
         .uptime_seconds = 0,
         .load1 = 0,
         .memory_total_bytes = 0,
@@ -36,6 +46,16 @@ pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config) !metrics
     const uptime_raw = try readProcFile(allocator, "/proc/uptime", 256);
     defer allocator.free(uptime_raw);
     report.uptime_seconds = try parseUptime(uptime_raw);
+
+    if (state) |collector_state| {
+        const stat_raw = try readProcFile(allocator, "/proc/stat", 1024);
+        defer allocator.free(stat_raw);
+        const cpu = try parseCpuStat(stat_raw);
+        if (collector_state.last_cpu) |last| {
+            report.cpu_percent = calculateCpuPercent(last, cpu);
+        }
+        collector_state.last_cpu = cpu;
+    }
 
     if (cfg.features.loadavg or cfg.features.process_count) {
         const loadavg_raw = try readProcFile(allocator, "/proc/loadavg", 256);
@@ -87,6 +107,41 @@ fn parseLoadAvg(raw: []const u8) !LoadSnapshot {
         .load1 = try std.fmt.parseFloat(f64, load1_raw),
         .process_count = try std.fmt.parseInt(u32, total_raw, 10),
     };
+}
+
+fn parseCpuStat(raw: []const u8) !CpuSnapshot {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    const first = lines.next() orelse return error.InvalidCpuStat;
+    var parts = std.mem.tokenizeAny(u8, first, " \t\r\n");
+    const cpu_label = parts.next() orelse return error.InvalidCpuStat;
+    if (!std.mem.eql(u8, cpu_label, "cpu")) return error.InvalidCpuStat;
+
+    const user = try nextCpuValue(&parts);
+    const nice = try nextCpuValue(&parts);
+    const system = try nextCpuValue(&parts);
+    const idle = try nextCpuValue(&parts);
+    const iowait = try nextCpuValue(&parts);
+    const irq = try nextCpuValue(&parts);
+    const softirq = try nextCpuValue(&parts);
+    const steal = nextCpuValue(&parts) catch 0;
+
+    const idle_all = idle + iowait;
+    const total = user + nice + system + idle + iowait + irq + softirq + steal;
+
+    return .{ .total = total, .idle = idle_all };
+}
+
+fn nextCpuValue(parts: *std.mem.TokenIterator(u8, .any)) !u64 {
+    const raw = parts.next() orelse return error.InvalidCpuStat;
+    return std.fmt.parseInt(u64, raw, 10);
+}
+
+fn calculateCpuPercent(previous: CpuSnapshot, current: CpuSnapshot) f64 {
+    if (current.total <= previous.total) return 0;
+    const total_delta = current.total - previous.total;
+    const idle_delta = if (current.idle > previous.idle) current.idle - previous.idle else 0;
+    if (total_delta == 0 or idle_delta >= total_delta) return 0;
+    return (@as(f64, @floatFromInt(total_delta - idle_delta)) * 100.0) / @as(f64, @floatFromInt(total_delta));
 }
 
 fn parseMemInfo(raw: []const u8, include_swap: bool) !MemorySnapshot {
@@ -148,4 +203,10 @@ test "parse meminfo computes used memory" {
     try std.testing.expectEqual(@as(u64, 12288 * 1024), parsed.used_bytes);
     try std.testing.expectEqual(@as(u64, 8192 * 1024), parsed.swap_total_bytes);
     try std.testing.expectEqual(@as(u64, 6144 * 1024), parsed.swap_used_bytes);
+}
+
+test "parse cpu stat computes percent" {
+    const first = try parseCpuStat("cpu  100 0 50 850 0 0 0 0 0 0\n");
+    const second = try parseCpuStat("cpu  150 0 70 880 0 0 0 0 0 0\n");
+    try std.testing.expectApproxEqAbs(@as(f64, 70.0), calculateCpuPercent(first, second), 0.001);
 }

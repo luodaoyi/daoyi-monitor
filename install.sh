@@ -199,6 +199,10 @@ DAOYI_AGENT_PROFILE=$PROFILE
 EOF
 
 if command -v systemctl >/dev/null 2>&1; then
+  as_root systemctl disable --now daoyi-agent-update.timer >/dev/null 2>&1 || true
+  as_root systemctl disable --now daoyi-agent-update.service >/dev/null 2>&1 || true
+  as_root rm -f /etc/systemd/system/daoyi-agent-update.service /etc/systemd/system/daoyi-agent-update.timer
+
   as_root sh -c "cat > /etc/systemd/system/daoyi-agent.service" <<EOF
 [Unit]
 Description=Daoyi Monitor Agent
@@ -216,33 +220,10 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 EOF
-  as_root sh -c "cat > /etc/systemd/system/daoyi-agent-update.service" <<EOF
-[Unit]
-Description=Update Daoyi Monitor Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-EnvironmentFile=$CONFIG_FILE
-ExecStart=/bin/sh -c 'if command -v curl >/dev/null 2>&1; then curl -fsSL "\$DAOYI_AGENT_INSTALLER_URL"; else wget -qO- "\$DAOYI_AGENT_INSTALLER_URL"; fi | sh -s -- --endpoint "\$DAOYI_AGENT_ENDPOINT" --token "\$DAOYI_AGENT_TOKEN" --profile "\${DAOYI_AGENT_PROFILE:-full}" --interval "\${DAOYI_AGENT_INTERVAL_SEC:-3}" --manifest-url "\$DAOYI_AGENT_UPDATE_MANIFEST_URL" --installer-url "\$DAOYI_AGENT_INSTALLER_URL" --install-dir "$INSTALL_DIR" --config-file "$CONFIG_FILE"'
-EOF
-  as_root sh -c "cat > /etc/systemd/system/daoyi-agent-update.timer" <<'EOF'
-[Unit]
-Description=Daily Daoyi Monitor Agent update
-
-[Timer]
-OnCalendar=daily
-Persistent=true
-RandomizedDelaySec=1800
-
-[Install]
-WantedBy=timers.target
-EOF
   as_root systemctl daemon-reload
-  as_root systemctl enable --now daoyi-agent daoyi-agent-update.timer
+  as_root systemctl enable --now daoyi-agent
   as_root systemctl restart daoyi-agent
-  echo "daoyi-agent installed, started, and daily self-update timer enabled"
+  echo "daoyi-agent installed and started"
 else
   echo "daoyi-agent installed to $INSTALL_DIR/daoyi-agent"
   echo "systemd not found; start it manually with: . $CONFIG_FILE && $INSTALL_DIR/daoyi-agent"

@@ -7,6 +7,7 @@ const SESSION_COOKIE = "daoyi_session";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const ONLINE_WINDOW_SECONDS = 240;
 const SECRET_MASK = "********";
+const PBKDF2_ITERATIONS = 100_000;
 
 app.onError((err, c) => {
   return c.json<ApiResponse<null>>(
@@ -592,7 +593,7 @@ async function pbkdf2(password: string, salt: string): Promise<string> {
       name: "PBKDF2",
       hash: "SHA-256",
       salt: encoder.encode(salt),
-      iterations: 120_000,
+      iterations: PBKDF2_ITERATIONS,
     },
     key,
     256,

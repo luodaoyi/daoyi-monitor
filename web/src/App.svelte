@@ -11,6 +11,7 @@
     createAgent,
     deleteAgent as removeAgent,
     loadAgents,
+    loadPublicAgents,
     rotateAgentToken
   } from "./stores/agents";
   import { initAdmin, initStatus, loadInitStatus } from "./stores/init";
@@ -24,7 +25,7 @@
   import { clearSession, currentUser, loadMe, login, logout, sessionLoading } from "./stores/session";
   import type { AgentCreateInput, AgentRecord, NotificationConfig } from "./types";
 
-  type Route = "/" | "/agents" | "/settings" | "/init" | "/login";
+  type Route = "/" | "/admin" | "/admin/agents" | "/admin/settings" | "/admin/init" | "/admin/login";
   type Notice = { kind: "error" | "success"; message: string };
   type RevealedSecret = { title: string; name: string; token: string };
 
@@ -33,6 +34,7 @@
   let bootError = "";
   let notice: Notice | null = null;
   let ws: WebSocketController | undefined;
+  let publicRefreshTimer: number | undefined;
 
   let initUsername = "";
   let initPassword = "";
@@ -87,6 +89,7 @@
     return () => {
       window.removeEventListener("popstate", handlePopState);
       closeRealtime();
+      stopPublicRefresh();
     };
   });
 
@@ -98,17 +101,25 @@
     try {
       const status = await loadInitStatus();
 
+      if (!isAdminRoute(route)) {
+        closeRealtime();
+        await activatePublicArea();
+        return;
+      }
+
+      stopPublicRefresh();
+
       if (!status.initialized) {
         clearAgents();
         closeRealtime();
-        if (route !== "/init") {
-          navigate("/init", true);
+        if (route !== "/admin/init") {
+          navigate("/admin/init", true);
         }
         return;
       }
 
-      if (route === "/init") {
-        navigate("/login", true);
+      if (route === "/admin/init") {
+        navigate("/admin/login", true);
       }
 
       await loadMe();
@@ -116,8 +127,8 @@
       if (!get(currentUser)) {
         clearAgents();
         closeRealtime();
-        if (route !== "/login") {
-          navigate("/login", true);
+        if (route !== "/admin/login") {
+          navigate("/admin/login", true);
         }
         return;
       }
@@ -134,18 +145,41 @@
     const status = get(initStatus);
     const user = get(currentUser);
 
-    if (status && !status.initialized && route !== "/init") {
-      navigate("/init", true);
+    if (!isAdminRoute(route)) {
+      closeRealtime();
+      await activatePublicArea();
       return;
     }
 
-    if (status?.initialized && !user && route !== "/login") {
-      navigate("/login", true);
+    stopPublicRefresh();
+
+    if (status && !status.initialized && route !== "/admin/init") {
+      navigate("/admin/init", true);
       return;
     }
 
-    if (user && (route === "/login" || route === "/init")) {
-      navigate("/", true);
+    if (status?.initialized && !user && route !== "/admin/login") {
+      navigate("/admin/login", true);
+      return;
+    }
+
+    if (user && (route === "/admin/login" || route === "/admin/init")) {
+      navigate("/admin", true);
+    }
+  }
+
+  async function activatePublicArea(): Promise<void> {
+    if (!get(initStatus)?.schemaReady) {
+      clearAgents();
+      stopPublicRefresh();
+      return;
+    }
+
+    try {
+      await loadPublicAgents();
+      startPublicRefresh();
+    } catch (error) {
+      notice = { kind: "error", message: `公共节点加载失败：${toErrorMessage(error)}` };
     }
   }
 
@@ -164,8 +198,8 @@
 
     connectRealtime();
 
-    if (route === "/login" || route === "/init") {
-      navigate("/", true);
+    if (route === "/admin/login" || route === "/admin/init") {
+      navigate("/admin", true);
     }
   }
 
@@ -245,7 +279,7 @@
       clearAgents();
       closeRealtime();
       revealedSecret = null;
-      navigate("/login", true);
+      navigate("/admin/login", true);
       notice = { kind: "success", message: "会话已退出。" };
     } catch (error) {
       notice = { kind: "error", message: `退出失败：${toErrorMessage(error)}` };
@@ -286,7 +320,7 @@
       resetCreateForm();
       revealSecret("新节点 Token", result.agent.name, result.token);
       notice = { kind: "success", message: `节点 ${result.agent.name} 已创建。` };
-      navigate("/agents");
+      navigate("/admin/agents");
     } catch (error) {
       if (await handleUnauthorized(error)) {
         return;
@@ -432,12 +466,23 @@
   }
 
   function navigate(next: Route, replace = false): void {
+    const previous = route;
     route = next;
     if (replace) {
       history.replaceState({}, "", next);
+    } else {
+      history.pushState({}, "", next);
+    }
+
+    if (isAdminRoute(next) && !isAdminRoute(previous)) {
+      void bootstrap();
       return;
     }
-    history.pushState({}, "", next);
+
+    if (!isAdminRoute(next) && isAdminRoute(previous)) {
+      closeRealtime();
+      void activatePublicArea();
+    }
   }
 
   function syncRouteFromLocation(): void {
@@ -445,10 +490,11 @@
   }
 
   function normalizeRoute(pathname: string): Route {
-    if (pathname === "/init") return "/init";
-    if (pathname === "/login") return "/login";
-    if (pathname === "/agents" || pathname.startsWith("/agents/")) return "/agents";
-    if (pathname === "/settings") return "/settings";
+    if (pathname === "/admin/init" || pathname === "/init") return "/admin/init";
+    if (pathname === "/admin/login" || pathname === "/login") return "/admin/login";
+    if (pathname === "/admin/agents" || pathname.startsWith("/admin/agents/") || pathname === "/agents") return "/admin/agents";
+    if (pathname === "/admin/settings" || pathname === "/settings") return "/admin/settings";
+    if (pathname === "/admin") return "/admin";
     return "/";
   }
 
@@ -485,9 +531,28 @@
     clearSession();
     clearAgents();
     closeRealtime();
-    navigate("/login", true);
+    navigate("/admin/login", true);
     notice = { kind: "error", message: "会话已失，请重新登录。" };
     return true;
+  }
+
+  function isAdminRoute(value: Route): boolean {
+    return value.startsWith("/admin");
+  }
+
+  function startPublicRefresh(): void {
+    if (publicRefreshTimer !== undefined) return;
+    publicRefreshTimer = window.setInterval(() => {
+      if (route === "/") {
+        void loadPublicAgents();
+      }
+    }, 30_000);
+  }
+
+  function stopPublicRefresh(): void {
+    if (publicRefreshTimer === undefined) return;
+    window.clearInterval(publicRefreshTimer);
+    publicRefreshTimer = undefined;
   }
 
   function compareAgentsForMonitor(left: AgentRecord, right: AgentRecord): number {
@@ -665,7 +730,120 @@
       <button class="btn primary" on:click={() => void bootstrap()}>重试</button>
     </section>
   </main>
-{:else if route === "/init"}
+{:else if route === "/"}
+  <main class="app-shell public-shell">
+    <header class="topbar public-topbar">
+      <div class="brand-line">
+        <div class="brand-mark">D</div>
+        <div>
+          <strong>Daoyi Monitor</strong>
+          <span>Public monitor</span>
+        </div>
+      </div>
+      <nav class="top-nav" aria-label="前台导航">
+        <button class="active">监控</button>
+      </nav>
+      <div class="top-actions">
+        <button class="btn soft" on:click={() => navigate("/admin")}>后台管理</button>
+      </div>
+    </header>
+
+    <section class="content public-content">
+      {#if notice}
+        <div class={`notice ${notice.kind}`}>{notice.message}</div>
+      {/if}
+
+      <section class="summary-card">
+        <div class="summary-head">
+          <div>
+            <span class="section-kicker">Overview</span>
+            <h1>服务器状态</h1>
+          </div>
+          <button class="icon-btn" title="刷新" disabled={$agentsLoading} on:click={() => void loadPublicAgents()}>
+            {$agentsLoading ? "…" : "↻"}
+          </button>
+        </div>
+        <div class="status-grid">
+          <article>
+            <span>当前在线</span>
+            <strong>{onlineCount} / {$agents.length}</strong>
+          </article>
+          <article>
+            <span>节点分组</span>
+            <strong>{groupCount}</strong>
+          </article>
+          <article>
+            <span>平均 CPU</span>
+            <strong>{formatPercent(cpuAverage)}</strong>
+          </article>
+          <article>
+            <span>平均内存</span>
+            <strong>{formatPercent(memoryAverage)}</strong>
+          </article>
+          <article>
+            <span>最近上报</span>
+            <strong>{formatRelativeAge(lastReportAt)}</strong>
+          </article>
+        </div>
+      </section>
+
+      <section class="node-grid">
+        {#if previewAgents.length === 0}
+          <div class="empty-state">
+            <h2>暂无公开节点</h2>
+            <p>后台创建并启用节点后，前台会自动显示非隐藏节点。</p>
+          </div>
+        {:else}
+          {#each previewAgents as agent}
+            <article class="node-card">
+              <div class="node-head">
+                <div class="node-title">
+                  <span class="node-dot" class:online={agent.online}></span>
+                  <div>
+                    <h2>{agent.name}</h2>
+                    <p>{agent.group_name ?? "default"}</p>
+                  </div>
+                </div>
+                <span class:online={agent.online} class="badge">{agent.online ? "Online" : "Offline"}</span>
+              </div>
+
+              <div class="tag-row">
+                {#each splitTags(agent.tags) as tag}
+                  <span>{tag}</span>
+                {/each}
+              </div>
+
+              <div class="usage-list">
+                <div class="usage-row">
+                  <span>CPU</span>
+                  <div class="usage-bar"><i style={`width: ${percentWidth(cpuPercent(agent))}`}></i></div>
+                  <strong>{formatPercent(cpuPercent(agent))}</strong>
+                </div>
+                <div class="usage-row">
+                  <span>RAM</span>
+                  <div class="usage-bar"><i style={`width: ${percentWidth(memoryPercent(agent))}`}></i></div>
+                  <strong>{formatPercent(memoryPercent(agent))}</strong>
+                </div>
+                <div class="usage-row">
+                  <span>Disk</span>
+                  <div class="usage-bar"><i style={`width: ${percentWidth(diskPercent(agent))}`}></i></div>
+                  <strong>{formatPercent(diskPercent(agent))}</strong>
+                </div>
+              </div>
+
+              <dl class="node-meta">
+                <div><dt>内存</dt><dd>{formatMetricBytes(agent, ["mem_used", "memory_used"])} / {formatMetricBytes(agent, ["mem_total", "memory_total"])}</dd></div>
+                <div><dt>网络</dt><dd>↑ {formatSpeed(uploadSpeed(agent))} ↓ {formatSpeed(downloadSpeed(agent))}</dd></div>
+                <div><dt>运行</dt><dd>{formatUptime(agent)}</dd></div>
+                <div><dt>更新</dt><dd>{formatRelativeAge(agent.last_seen)}</dd></div>
+              </dl>
+            </article>
+          {/each}
+        {/if}
+      </section>
+    </section>
+  </main>
+{:else if route === "/admin/init"}
   <main class="auth-shell">
     <section class="auth-card">
       <div class="brand-line">
@@ -710,7 +888,7 @@
       </form>
     </section>
   </main>
-{:else if route === "/login"}
+{:else if route === "/admin/login"}
   <main class="auth-shell">
     <section class="auth-card">
       <div class="brand-line">
@@ -756,11 +934,12 @@
         </div>
       </div>
       <nav class="top-nav" aria-label="主导航">
-        <button class:active={route === "/"} on:click={() => navigate("/")}>监控</button>
-        <button class:active={route === "/agents"} on:click={() => navigate("/agents")}>节点</button>
-        <button class:active={route === "/settings"} on:click={() => navigate("/settings")}>通知</button>
+        <button class:active={route === "/admin"} on:click={() => navigate("/admin")}>总览</button>
+        <button class:active={route === "/admin/agents"} on:click={() => navigate("/admin/agents")}>节点</button>
+        <button class:active={route === "/admin/settings"} on:click={() => navigate("/admin/settings")}>通知</button>
       </nav>
       <div class="top-actions">
+        <button class="btn soft" on:click={() => navigate("/")}>前台</button>
         <span class="user-pill">{$currentUser?.username ?? "admin"}</span>
         <button class="icon-btn" disabled={$sessionLoading} title="退出" on:click={() => void submitLogout()}>↪</button>
       </div>
@@ -768,15 +947,15 @@
 
     <div class="main-grid">
       <aside class="admin-sidebar">
-        <button class:active={route === "/"} on:click={() => navigate("/")}>
+        <button class:active={route === "/admin"} on:click={() => navigate("/admin")}>
           <span class="side-icon overview" aria-hidden="true"></span>
           概览
         </button>
-        <button class:active={route === "/agents"} on:click={() => navigate("/agents")}>
+        <button class:active={route === "/admin/agents"} on:click={() => navigate("/admin/agents")}>
           <span class="side-icon nodes" aria-hidden="true"></span>
           客户端
         </button>
-        <button class:active={route === "/settings"} on:click={() => navigate("/settings")}>
+        <button class:active={route === "/admin/settings"} on:click={() => navigate("/admin/settings")}>
           <span class="side-icon notify" aria-hidden="true"></span>
           通知
         </button>
@@ -808,7 +987,7 @@
           </section>
         {/if}
 
-        {#if route === "/"}
+        {#if route === "/admin"}
           <section class="summary-card">
             <div class="summary-head">
               <div>
@@ -848,7 +1027,7 @@
               <div class="empty-state">
                 <h2>暂无节点</h2>
                 <p>先创建客户端，复制 token 后部署 Agent。</p>
-                <button class="btn primary" on:click={() => ((createOpen = true), navigate("/agents"))}>新建节点</button>
+                <button class="btn primary" on:click={() => ((createOpen = true), navigate("/admin/agents"))}>新建节点</button>
               </div>
             {:else}
               {#each previewAgents as agent}
@@ -904,7 +1083,7 @@
               {/each}
             {/if}
           </section>
-        {:else if route === "/agents"}
+        {:else if route === "/admin/agents"}
           <section class="page-head">
             <div>
               <span class="section-kicker">Clients</span>

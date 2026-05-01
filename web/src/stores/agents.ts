@@ -17,6 +17,18 @@ export async function loadAgents(): Promise<AgentRecord[]> {
   }
 }
 
+export async function loadPublicAgents(): Promise<AgentRecord[]> {
+  agentsLoading.set(true);
+  try {
+    const payload = await apiGet<unknown>("/api/public/agents");
+    const items = readAgentList(payload).map((item) => normalizeAgentRecord(item));
+    agents.set(sortAgents(items));
+    return items;
+  } finally {
+    agentsLoading.set(false);
+  }
+}
+
 export function clearAgents(): void {
   agents.set([]);
 }

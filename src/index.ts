@@ -41,6 +41,23 @@ app.get("/api/init/status", async (c) => {
   });
 });
 
+app.get("/api/public/agents", async (c) => {
+  const rows = await c.env.DB.prepare(
+    `
+      SELECT
+        a.id, a.name, a.enabled, a.hidden, a.weight, a.group_name, a.tags,
+        a.remark, a.public_remark, a.token_preview, a.created_at, a.updated_at,
+        s.last_seen, s.payload_json
+      FROM agents a
+      LEFT JOIN agent_status s ON s.agent_id = a.id
+      WHERE a.enabled = 1 AND a.hidden = 0
+      ORDER BY a.weight ASC, a.created_at ASC
+    `,
+  ).all<AgentRow>();
+
+  return json((rows.results ?? []).map(publicAgentFromRow));
+});
+
 app.post("/api/init", async (c) => initAdmin(c.env, c.req.raw));
 app.post("/api/init/admin", async (c) => initAdmin(c.env, c.req.raw));
 
@@ -878,6 +895,15 @@ function agentFromRow(row: AgentRow): AgentDto {
     metrics,
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
+  };
+}
+
+function publicAgentFromRow(row: AgentRow): AgentDto {
+  return {
+    ...agentFromRow(row),
+    hidden: false,
+    remark: null,
+    token_preview: "",
   };
 }
 

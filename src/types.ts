@@ -27,6 +27,14 @@ export interface UserDto {
   username: string;
 }
 
+export interface SiteConfig {
+  site_name: string;
+  site_description: string;
+  agent_endpoint: string;
+  custom_head: string;
+  custom_body: string;
+}
+
 export interface AgentDto {
   id: string;
   agent_id: string;

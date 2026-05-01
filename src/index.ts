@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { Hub } from "./durable-objects/hub";
-import type { AgentDto, ApiResponse, Env, InitStatus, UserDto } from "./types";
+import type { AgentDto, ApiResponse, Env, InitStatus, SiteConfig, UserDto } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
 const SESSION_COOKIE = "daoyi_session";
@@ -69,6 +69,10 @@ app.get("/api/public/agents", async (c) => {
   const agents = (rows.results ?? []).map(publicAgentFromRow);
   const live = await getHubSnapshot(c.env).catch(() => []);
   return json(mergeLiveAgents(agents, live));
+});
+
+app.get("/api/public/site", async (c) => {
+  return json(await readSiteConfig(c.env));
 });
 
 app.post("/api/init", async (c) => initAdmin(c.env, c.req.raw));
@@ -160,6 +164,42 @@ app.post("/api/settings/notifications/test", async (c) => {
   if (!config.enabled) return error("NOTIFICATION_DISABLED", "通知未启用", 400);
   await sendNotifications(config, "Daoyi-Monitor test notification.");
   return json({ sent: true });
+});
+
+app.get("/api/settings/site", async (c) => {
+  const user = await requireAdmin(c.env, c.req.raw);
+  if (!user.ok) return user.response;
+  return json(await readSiteConfig(c.env));
+});
+
+app.put("/api/settings/site", async (c) => {
+  const user = await requireAdmin(c.env, c.req.raw);
+  if (!user.ok) return user.response;
+  const body = await readJson<Partial<SiteConfig>>(c.req.raw);
+  const next = normalizeSiteConfig(body, await readSiteConfig(c.env));
+  await writeSetting(c.env, "site_config", JSON.stringify(next));
+  return json(next);
+});
+
+app.get("/api/settings/backup", async (c) => {
+  const user = await requireAdmin(c.env, c.req.raw);
+  if (!user.ok) return user.response;
+  const backup = await exportBackup(c.env);
+  return new Response(JSON.stringify(backup, null, 2), {
+    headers: {
+      "cache-control": "no-store",
+      "content-disposition": `attachment; filename="daoyi-monitor-backup-${nowSeconds()}.json"`,
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+});
+
+app.post("/api/settings/backup/import", async (c) => {
+  const user = await requireAdmin(c.env, c.req.raw);
+  if (!user.ok) return user.response;
+  const body = await readJson<unknown>(c.req.raw);
+  const result = await importBackup(c.env, body);
+  return json(result);
 });
 
 app.get("/api/agents", async (c) => {
@@ -790,6 +830,31 @@ type NotificationState = {
   offline: Record<string, number>;
 };
 
+type BackupPayload = {
+  app: "daoyi-monitor";
+  version: 1;
+  exported_at: number;
+  settings: Array<{ key: string; value: string; updated_at: number }>;
+  agents: Array<AgentBackupRow>;
+  agent_status: Array<{ agent_id: string; last_seen: number | null; payload_json: string | null; updated_at: number }>;
+};
+
+type AgentBackupRow = {
+  id: string;
+  name: string;
+  token_hash: string;
+  token_preview: string;
+  enabled: number;
+  hidden: number;
+  weight: number;
+  group_name: string | null;
+  tags: string | null;
+  remark: string | null;
+  public_remark: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
 function json<T>(data: T, status = 200, headers?: HeadersInit): Response {
   return Response.json({ ok: true, data } satisfies ApiResponse<T>, {
     status,
@@ -1045,6 +1110,27 @@ async function readNotificationConfig(env: Env): Promise<NotificationConfig> {
   return normalizeNotificationConfig(raw ? safeJsonParse(raw) : null);
 }
 
+async function readSiteConfig(env: Env): Promise<SiteConfig> {
+  const raw = await readSetting(env, "site_config");
+  return normalizeSiteConfig(raw ? safeJsonParse(raw) : null);
+}
+
+function normalizeSiteConfig(raw: unknown, existing?: SiteConfig): SiteConfig {
+  const value = isRecord(raw) ? raw : {};
+  return {
+    site_name: readLimitedString(value.site_name, existing?.site_name ?? "Daoyi Monitor", 80),
+    site_description: readLimitedString(value.site_description, existing?.site_description ?? "Cloudflare Monitor", 160),
+    agent_endpoint: readLimitedString(value.agent_endpoint, existing?.agent_endpoint ?? "", 2048),
+    custom_head: readLimitedString(value.custom_head, existing?.custom_head ?? "", 20000),
+    custom_body: readLimitedString(value.custom_body, existing?.custom_body ?? "", 20000),
+  };
+}
+
+function readLimitedString(value: unknown, fallback: string, max: number): string {
+  if (typeof value !== "string") return fallback;
+  return value.length <= max ? value : value.slice(0, max);
+}
+
 function normalizeNotificationConfig(raw: unknown, existing?: NotificationConfig): NotificationConfig {
   const value = isRecord(raw) ? raw : {};
   return {
@@ -1107,6 +1193,100 @@ async function writeSetting(env: Env, key: string, value: string): Promise<void>
   )
     .bind(key, value, nowSeconds())
     .run();
+}
+
+async function exportBackup(env: Env): Promise<BackupPayload> {
+  const [settings, agents, status] = await Promise.all([
+    env.DB.prepare(`SELECT key, value, updated_at FROM settings ORDER BY key ASC`).all<{ key: string; value: string; updated_at: number }>(),
+    env.DB.prepare(
+      `SELECT id, name, token_hash, token_preview, enabled, hidden, weight, group_name, tags, remark, public_remark, created_at, updated_at FROM agents ORDER BY created_at ASC`,
+    ).all<AgentBackupRow>(),
+    env.DB.prepare(`SELECT agent_id, last_seen, payload_json, updated_at FROM agent_status ORDER BY agent_id ASC`)
+      .all<{ agent_id: string; last_seen: number | null; payload_json: string | null; updated_at: number }>(),
+  ]);
+
+  return {
+    app: "daoyi-monitor",
+    version: 1,
+    exported_at: nowSeconds(),
+    settings: settings.results ?? [],
+    agents: agents.results ?? [],
+    agent_status: status.results ?? [],
+  };
+}
+
+async function importBackup(env: Env, raw: unknown): Promise<{ imported: true; agents: number; settings: number }> {
+  if (!isRecord(raw) || raw.app !== "daoyi-monitor" || raw.version !== 1) {
+    throw new Error("备份文件格式不正确。");
+  }
+  const settings = Array.isArray(raw.settings) ? raw.settings.filter(isRecord) : [];
+  const agents = Array.isArray(raw.agents) ? raw.agents.filter(isRecord) : [];
+  const status = Array.isArray(raw.agent_status) ? raw.agent_status.filter(isRecord) : [];
+  const now = nowSeconds();
+
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`DELETE FROM agent_status`),
+    env.DB.prepare(`DELETE FROM agent_history`),
+    env.DB.prepare(`DELETE FROM agents`),
+    env.DB.prepare(`DELETE FROM settings`),
+  ];
+
+  for (const item of settings) {
+    const key = readString(item.key);
+    const value = typeof item.value === "string" ? item.value : null;
+    if (!key || value === null) continue;
+    statements.push(
+      env.DB.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)`)
+        .bind(key, value, readNumberLoose(item.updated_at) ?? now),
+    );
+  }
+
+  for (const item of agents) {
+    const id = readString(item.id);
+    const name = readString(item.name);
+    const tokenHash = readString(item.token_hash);
+    const tokenPreview = readString(item.token_preview);
+    if (!id || !name || !tokenHash || !tokenPreview) continue;
+    statements.push(
+      env.DB.prepare(
+        `
+          INSERT INTO agents (id, name, token_hash, token_preview, enabled, hidden, weight, group_name, tags, remark, public_remark, created_at, updated_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        `,
+      ).bind(
+        id,
+        name,
+        tokenHash,
+        tokenPreview,
+        readIntLoose(item.enabled) ?? 1,
+        readIntLoose(item.hidden) ?? 0,
+        readIntLoose(item.weight) ?? 0,
+        nullableStringLoose(item.group_name, 120),
+        nullableStringLoose(item.tags, 500),
+        nullableStringLoose(item.remark, 2000),
+        nullableStringLoose(item.public_remark, 2000),
+        readNumberLoose(item.created_at) ?? now,
+        readNumberLoose(item.updated_at) ?? now,
+      ),
+    );
+  }
+
+  for (const item of status) {
+    const agentId = readString(item.agent_id);
+    if (!agentId) continue;
+    statements.push(
+      env.DB.prepare(`INSERT INTO agent_status (agent_id, last_seen, payload_json, updated_at) VALUES (?1, ?2, ?3, ?4)`)
+        .bind(
+          agentId,
+          readNumberLoose(item.last_seen),
+          typeof item.payload_json === "string" ? item.payload_json : null,
+          readNumberLoose(item.updated_at) ?? now,
+        ),
+    );
+  }
+
+  await env.DB.batch(statements);
+  return { imported: true, agents: agents.length, settings: settings.length };
 }
 
 async function sendNotifications(config: NotificationConfig, message: string): Promise<void> {
@@ -1215,6 +1395,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readNumberLoose(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readIntLoose(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
 export { Hub };

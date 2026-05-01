@@ -72,3 +72,11 @@ export type NotificationConfig = {
   telegram_bot_token: string | null;
   telegram_chat_id: string | null;
 };
+
+export type SiteConfig = {
+  site_name: string;
+  site_description: string;
+  agent_endpoint: string;
+  custom_head: string;
+  custom_body: string;
+};

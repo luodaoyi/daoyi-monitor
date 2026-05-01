@@ -17,10 +17,10 @@ import {
 import {
   Activity,
   ArrowLeft,
-  Bell,
   ChevronRight,
   Copy,
   Cpu,
+  Download,
   Gauge,
   Grid3X3,
   GripVertical,
@@ -39,6 +39,7 @@ import {
   Settings,
   Table2,
   Trash2,
+  Upload,
   Wifi,
   X
 } from "lucide-react";
@@ -53,6 +54,7 @@ import type {
   AgentStatus,
   InitStatus,
   NotificationConfig,
+  SiteConfig,
   User
 } from "./types";
 
@@ -94,6 +96,9 @@ export default function App() {
   const [revealedSecret, setRevealedSecret] = useState<RevealedSecret | null>(null);
   const [copyingToken, setCopyingToken] = useState(false);
   const [copyingInstall, setCopyingInstall] = useState(false);
+  const [siteSettings, setSiteSettings] = useState(defaultSiteConfig());
+  const [siteSaving, setSiteSaving] = useState(false);
+  const [backupImporting, setBackupImporting] = useState(false);
   const [notificationForm, setNotificationForm] = useState(defaultNotificationConfig());
   const [notificationSaving, setNotificationSaving] = useState(false);
   const wsRef = useRef<WebSocketController | null>(null);
@@ -142,6 +147,15 @@ export default function App() {
   }, [selectedGroup]);
 
   useEffect(() => {
+    document.title = siteSettings.site_name || "Daoyi Monitor";
+    const description = document.querySelector<HTMLMetaElement>('meta[name="description"]') ?? document.head.appendChild(document.createElement("meta"));
+    description.name = "description";
+    description.content = siteSettings.site_description || "Cloudflare Monitor";
+    applyCustomHead(siteSettings.custom_head);
+    return () => applyCustomHead("");
+  }, [siteSettings]);
+
+  useEffect(() => {
     let cancelled = false;
     let refreshTimer: number | undefined;
 
@@ -152,6 +166,8 @@ export default function App() {
       wsRef.current = null;
 
       try {
+        await loadPublicSiteSettings();
+        if (cancelled) return;
         const status = await apiGet<InitStatus>("/api/init/status");
         if (cancelled) return;
         setInitStatus(status);
@@ -190,7 +206,7 @@ export default function App() {
           return;
         }
 
-        await Promise.all([loadAdminAgents(), loadNotifications()]);
+        await Promise.all([loadAdminAgents(), loadNotifications(), loadSiteSettings()]);
         wsRef.current = connectAdminWs((event) => setAgents((items) => applyRealtimeEvent(items, event)));
       } catch (error) {
         if (!cancelled) setNotice({ kind: "error", message: toErrorMessage(error) });
@@ -218,6 +234,10 @@ export default function App() {
     }
   }, []);
 
+  const loadPublicSiteSettings = useCallback(async () => {
+    setSiteSettings(await apiGet<SiteConfig>("/api/public/site"));
+  }, []);
+
   const loadAdminAgents = useCallback(async () => {
     setAgentsLoading(true);
     try {
@@ -231,6 +251,10 @@ export default function App() {
   const loadNotifications = useCallback(async () => {
     const settings = await apiGet<NotificationConfig>("/api/settings/notifications");
     setNotificationForm(settings);
+  }, []);
+
+  const loadSiteSettings = useCallback(async () => {
+    setSiteSettings(await apiGet<SiteConfig>("/api/settings/site"));
   }, []);
 
   async function loadMeSafe(): Promise<User | null> {
@@ -346,6 +370,52 @@ export default function App() {
     }
   }
 
+  async function saveSiteSettings() {
+    setSiteSaving(true);
+    try {
+      const settings = await apiPut<SiteConfig>("/api/settings/site", siteSettings);
+      setSiteSettings(settings);
+      setNotice({ kind: "success", message: "站点设置已保存。" });
+    } catch (error) {
+      setNotice({ kind: "error", message: toErrorMessage(error) });
+    } finally {
+      setSiteSaving(false);
+    }
+  }
+
+  async function exportBackup() {
+    try {
+      const response = await fetch("/api/settings/backup", { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`导出失败：${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `daoyi-monitor-backup-${Math.floor(Date.now() / 1000)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setNotice({ kind: "success", message: "备份已导出。" });
+    } catch (error) {
+      setNotice({ kind: "error", message: toErrorMessage(error) });
+    }
+  }
+
+  async function importBackup(file: File) {
+    setBackupImporting(true);
+    try {
+      const payload = JSON.parse(await file.text()) as unknown;
+      await apiPost("/api/settings/backup/import", payload);
+      await Promise.all([loadAdminAgents(), loadNotifications(), loadSiteSettings()]);
+      setNotice({ kind: "success", message: "备份已导入。" });
+    } catch (error) {
+      setNotice({ kind: "error", message: toErrorMessage(error) });
+    } finally {
+      setBackupImporting(false);
+    }
+  }
+
   async function testNotifications() {
     try {
       await apiPost("/api/settings/notifications/test");
@@ -371,6 +441,7 @@ export default function App() {
 
   const content = route === "/instance" ? (
     <InstancePage
+      site={siteSettings}
       agent={instanceAgent}
       clock={clock}
       loading={agentsLoading}
@@ -379,6 +450,7 @@ export default function App() {
     />
   ) : !isAdminRoute(route) ? (
     <PublicPage
+      site={siteSettings}
       agents={filteredPublicAgents}
       allCount={publicAgents.length}
       onlineCount={publicOnlineCount}
@@ -404,10 +476,11 @@ export default function App() {
       {revealedSecret && (
         <SecretPanel
           secret={revealedSecret}
+          agentEndpoint={siteSettings.agent_endpoint}
           copyingToken={copyingToken}
           copyingInstall={copyingInstall}
           onCopyToken={() => void copyText(revealedSecret.token, "token")}
-          onCopyInstall={() => void copyText(buildInstallCommand(revealedSecret.token), "install")}
+          onCopyInstall={() => void copyText(buildInstallCommand(revealedSecret.token, siteSettings.agent_endpoint), "install")}
           onClose={() => setRevealedSecret(null)}
         />
       )}
@@ -432,12 +505,19 @@ export default function App() {
         />
       )}
       {route === "/admin/settings" && (
-        <NotificationsPage
-          form={notificationForm}
-          setForm={setNotificationForm}
-          saving={notificationSaving}
-          save={() => void saveNotifications()}
-          test={() => void testNotifications()}
+        <SettingsPage
+          site={siteSettings}
+          setSite={setSiteSettings}
+          siteSaving={siteSaving}
+          saveSite={() => void saveSiteSettings()}
+          exportBackup={() => void exportBackup()}
+          importBackup={(file) => void importBackup(file)}
+          backupImporting={backupImporting}
+          notifications={notificationForm}
+          setNotifications={setNotificationForm}
+          notificationSaving={notificationSaving}
+          saveNotifications={() => void saveNotifications()}
+          testNotifications={() => void testNotifications()}
         />
       )}
       <DeleteDialog
@@ -453,11 +533,13 @@ export default function App() {
   return (
     <Theme accentColor="indigo" grayColor="slate" radius="medium" scaling="100%">
       {loading && !initStatus ? <LoadingScreen /> : content}
+      <CustomBody html={siteSettings.custom_body} />
     </Theme>
   );
 }
 
 function PublicPage(props: {
+  site: SiteConfig;
   agents: AgentRecord[];
   allCount: number;
   onlineCount: number;
@@ -483,11 +565,11 @@ function PublicPage(props: {
       <nav className="nav-bar sticky top-0 z-10 flex min-h-14 items-center gap-2 rounded-b-lg px-4 py-2 backdrop-blur">
         <div className="mr-auto flex min-w-0 items-center">
           <button className="flex min-w-0 items-center" onClick={() => props.navigate("/")}>
-            <span className="truncate text-[clamp(1.25rem,5vw,1.875rem)] font-bold leading-tight">Daoyi Monitor</span>
+            <span className="truncate text-[clamp(1.25rem,5vw,1.875rem)] font-bold leading-tight">{props.site.site_name}</span>
           </button>
           <div className="ml-3 hidden flex-row items-baseline md:flex">
             <div className="mr-2 h-4 self-center border-r-2 border-[var(--accent-3)]" />
-            <span className="whitespace-nowrap text-base font-bold text-[var(--accent-8)]">Komari Monitor</span>
+            <span className="whitespace-nowrap text-base font-bold text-[var(--accent-8)]">{props.site.site_description}</span>
           </div>
         </div>
         <Flex gap="2" align="center">
@@ -526,6 +608,7 @@ function PublicPage(props: {
 }
 
 function InstancePage(props: {
+  site: SiteConfig;
   agent: AgentRecord | null;
   clock: Date;
   loading: boolean;
@@ -539,7 +622,7 @@ function InstancePage(props: {
       <nav className="nav-bar sticky top-0 z-10 flex min-h-14 items-center gap-2 rounded-b-lg px-4 py-2 backdrop-blur">
         <IconButton variant="ghost" title="返回首页" onClick={() => props.navigate("/")}><ArrowLeft size={18} /></IconButton>
         <button className="mr-auto flex min-w-0 items-center" onClick={() => props.navigate("/")}>
-          <span className="truncate text-[clamp(1.25rem,5vw,1.875rem)] font-bold leading-tight">Daoyi Monitor</span>
+          <span className="truncate text-[clamp(1.25rem,5vw,1.875rem)] font-bold leading-tight">{props.site.site_name}</span>
         </button>
         <Text size="2" color="gray" className="hidden sm:block">{props.clock.toLocaleTimeString("zh-CN", { hour12: false })}</Text>
         <IconButton variant="ghost" title="刷新" onClick={props.refresh} disabled={props.loading}><RefreshCcw size={16} /></IconButton>
@@ -780,7 +863,7 @@ function AdminShell({ route, navigate, user, onLogout, children }: { route: Rout
   const items = [
     { route: "/admin" as Route, label: "总览", icon: Activity },
     { route: "/admin/agents" as Route, label: "客户端", icon: Monitor },
-    { route: "/admin/settings" as Route, label: "通知", icon: Bell }
+    { route: "/admin/settings" as Route, label: "设置", icon: Settings }
   ];
   return (
     <div className="grid h-screen w-screen grid-rows-[auto_1fr] overflow-auto bg-[var(--accent-1)] md:grid-cols-[auto_1fr]">
@@ -937,14 +1020,75 @@ function AgentsPage(props: {
   );
 }
 
-function NotificationsPage({ form, setForm, saving, save, test }: { form: NotificationConfig; setForm: React.Dispatch<React.SetStateAction<NotificationConfig>>; saving: boolean; save: () => void; test: () => void }) {
+function SettingsPage(props: {
+  site: SiteConfig;
+  setSite: React.Dispatch<React.SetStateAction<SiteConfig>>;
+  siteSaving: boolean;
+  saveSite: () => void;
+  exportBackup: () => void;
+  importBackup: (file: File) => void;
+  backupImporting: boolean;
+  notifications: NotificationConfig;
+  setNotifications: React.Dispatch<React.SetStateAction<NotificationConfig>>;
+  notificationSaving: boolean;
+  saveNotifications: () => void;
+  testNotifications: () => void;
+}) {
+  const form = props.notifications;
+  const setForm = props.setNotifications;
   return (
     <div className="space-y-4">
       <Flex justify="between" align="center" gap="3" wrap="wrap">
-        <div><Text size="1" color="gray">Notification</Text><Text as="div" size="6" weight="bold">通知设置</Text></div>
-        <Flex gap="2"><Button variant="soft" onClick={test}>测试</Button><Button disabled={saving} onClick={save}>{saving ? "保存中..." : "保存"}</Button></Flex>
+        <div><Text size="1" color="gray">Settings</Text><Text as="div" size="6" weight="bold">站点设置</Text></div>
       </Flex>
+
       <Card className="space-y-4">
+        <Flex justify="between" align="center" gap="3" wrap="wrap">
+          <div><Text weight="bold">基础信息</Text><Text as="div" size="2" color="gray">设置公开页面标题、描述和 Agent 连接地址。</Text></div>
+          <Button disabled={props.siteSaving} onClick={props.saveSite}>{props.siteSaving ? "保存中..." : "保存站点"}</Button>
+        </Flex>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="站点名称"><TextField.Root value={props.site.site_name} onChange={(event) => props.setSite((item) => ({ ...item, site_name: event.target.value }))} /></Field>
+          <Field label="站点描述"><TextField.Root value={props.site.site_description} onChange={(event) => props.setSite((item) => ({ ...item, site_description: event.target.value }))} /></Field>
+        </div>
+        <Field label="Agent 连接地址"><TextField.Root placeholder="留空使用当前域名，例如 https://monitor.example.com" value={props.site.agent_endpoint} onChange={(event) => props.setSite((item) => ({ ...item, agent_endpoint: event.target.value }))} /></Field>
+      </Card>
+
+      <Card className="space-y-4">
+        <Flex justify="between" align="center" gap="3" wrap="wrap">
+          <div><Text weight="bold">自定义内容</Text><Text as="div" size="2" color="gray">自定义 Header 会注入到 document.head，Body 会显示在页面底部。</Text></div>
+          <Button disabled={props.siteSaving} onClick={props.saveSite}>{props.siteSaving ? "保存中..." : "保存自定义"}</Button>
+        </Flex>
+        <Field label="自定义 Header"><TextArea rows={8} value={props.site.custom_head} onChange={(event) => props.setSite((item) => ({ ...item, custom_head: event.target.value }))} placeholder="<style>...</style> 或 <script>...</script>" /></Field>
+        <Field label="自定义 Body"><TextArea rows={8} value={props.site.custom_body} onChange={(event) => props.setSite((item) => ({ ...item, custom_body: event.target.value }))} placeholder="<div>...</div>" /></Field>
+      </Card>
+
+      <Card className="space-y-4">
+        <div><Text weight="bold">备份</Text><Text as="div" size="2" color="gray">导出/导入站点设置、节点、Token 哈希和最新状态；不会覆盖管理员账号。</Text></div>
+        <Flex gap="2" wrap="wrap">
+          <Button variant="soft" onClick={props.exportBackup}><Download size={16} />导出备份</Button>
+          <label className="inline-flex">
+            <input
+              className="hidden"
+              type="file"
+              accept="application/json,.json"
+              disabled={props.backupImporting}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.currentTarget.value = "";
+                if (file) props.importBackup(file);
+              }}
+            />
+            <Button asChild disabled={props.backupImporting} variant="soft" color="orange"><span><Upload size={16} />{props.backupImporting ? "导入中..." : "导入备份"}</span></Button>
+          </label>
+        </Flex>
+      </Card>
+
+      <Card className="space-y-4">
+        <Flex justify="between" align="center" gap="3" wrap="wrap">
+          <div><Text weight="bold">通知设置</Text><Text as="div" size="2" color="gray">支持 Webhook 和 Telegram。</Text></div>
+          <Flex gap="2"><Button variant="soft" onClick={props.testNotifications}>测试</Button><Button disabled={props.notificationSaving} onClick={props.saveNotifications}>{props.notificationSaving ? "保存中..." : "保存通知"}</Button></Flex>
+        </Flex>
         <label className="flex items-center gap-2 text-sm"><Switch checked={form.enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, enabled: value }))} />启用通知</label>
         <Separator size="4" />
         <label className="flex items-center gap-2 text-sm"><Switch checked={form.webhook_enabled} onCheckedChange={(value) => setForm((item) => ({ ...item, webhook_enabled: value }))} />Webhook</label>
@@ -999,8 +1143,8 @@ function AuthFrame({ title, subtitle, children }: { title: string; subtitle: str
   );
 }
 
-function SecretPanel({ secret, copyingToken, copyingInstall, onCopyToken, onCopyInstall, onClose }: { secret: RevealedSecret; copyingToken: boolean; copyingInstall: boolean; onCopyToken: () => void; onCopyInstall: () => void; onClose: () => void }) {
-  const install = buildInstallCommand(secret.token);
+function SecretPanel({ secret, agentEndpoint, copyingToken, copyingInstall, onCopyToken, onCopyInstall, onClose }: { secret: RevealedSecret; agentEndpoint: string; copyingToken: boolean; copyingInstall: boolean; onCopyToken: () => void; onCopyInstall: () => void; onClose: () => void }) {
+  const install = buildInstallCommand(secret.token, agentEndpoint);
   return (
     <Card className="mb-4 border-[var(--accent-7)] bg-[var(--accent-2)]">
       <Text size="1" color="gray">{secret.title}</Text>
@@ -1194,6 +1338,36 @@ function defaultNotificationConfig(): NotificationConfig {
   return { enabled: false, webhook_enabled: false, webhook_url: "", telegram_enabled: false, telegram_bot_token: "", telegram_chat_id: "" };
 }
 
+function defaultSiteConfig(): SiteConfig {
+  return { site_name: "Daoyi Monitor", site_description: "Cloudflare Monitor", agent_endpoint: "", custom_head: "", custom_body: "" };
+}
+
+function applyCustomHead(html: string) {
+  document.querySelectorAll("[data-daoyi-custom-head]").forEach((node) => node.remove());
+  if (!html.trim()) return;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  for (const node of Array.from(template.content.childNodes)) {
+    const next = recreateExecutableNode(node);
+    if (next instanceof HTMLElement) next.dataset.daoyiCustomHead = "true";
+    document.head.appendChild(next);
+  }
+}
+
+function recreateExecutableNode(node: Node): Node {
+  if (node.nodeName.toLowerCase() !== "script") return node.cloneNode(true);
+  const source = node as HTMLScriptElement;
+  const script = document.createElement("script");
+  for (const attr of Array.from(source.attributes)) script.setAttribute(attr.name, attr.value);
+  script.text = source.text;
+  return script;
+}
+
+function CustomBody({ html }: { html: string }) {
+  if (!html.trim()) return null;
+  return <div data-daoyi-custom-body dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
 function readMetricAny(agent: AgentRecord, keys: string[]): number | null {
   for (const key of keys) {
     const value = agent.metrics?.[key];
@@ -1367,8 +1541,8 @@ function getOSImage(osString: string): string {
   ];
   return configs.find((config) => config.keywords.some((keyword) => normalized.includes(keyword)))?.image ?? "/assets/logo/linux.svg";
 }
-function buildInstallCommand(token: string) {
-  const origin = window.location.origin;
+function buildInstallCommand(token: string, agentEndpoint = "") {
+  const origin = (agentEndpoint.trim() || window.location.origin).replace(/\/+$/, "");
   return `curl -fsSL ${origin}/install.sh | sh -s -- --endpoint '${origin}' --token '${token.replaceAll("'", "'\"'\"'")}' --profile full --interval 3 --installer-url '${origin}/install.sh'`;
 }
 function emptyToNull(value: string) { const next = value.trim(); return next ? next : null; }

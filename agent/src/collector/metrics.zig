@@ -22,6 +22,12 @@ pub const ReportMessage = struct {
     swap_total_bytes: u64,
     swap_used_bytes: u64,
     process_count: u32,
+    disk_total_bytes: u64,
+    disk_used_bytes: u64,
+    network_up_bytes_per_sec: u64,
+    network_down_bytes_per_sec: u64,
+    network_total_up_bytes: u64,
+    network_total_down_bytes: u64,
 };
 
 pub fn buildHello(cfg: *const config.Config, version: []const u8) HelloMessage {

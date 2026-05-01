@@ -20,8 +20,20 @@ const CpuSnapshot = struct {
     idle: u64,
 };
 
+const DiskSnapshot = struct {
+    total_bytes: u64,
+    used_bytes: u64,
+};
+
+const NetworkSnapshot = struct {
+    rx_bytes: u64,
+    tx_bytes: u64,
+    timestamp_unix: i64,
+};
+
 pub const CollectorState = struct {
     last_cpu: ?CpuSnapshot = null,
+    last_network: ?NetworkSnapshot = null,
 };
 
 pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?*CollectorState) !metrics.ReportMessage {
@@ -36,6 +48,12 @@ pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?
         .swap_total_bytes = 0,
         .swap_used_bytes = 0,
         .process_count = 0,
+        .disk_total_bytes = 0,
+        .disk_used_bytes = 0,
+        .network_up_bytes_per_sec = 0,
+        .network_down_bytes_per_sec = 0,
+        .network_total_up_bytes = 0,
+        .network_total_down_bytes = 0,
     };
 
     if (builtin.os.tag != .linux) {
@@ -76,6 +94,31 @@ pub fn collect(allocator: std.mem.Allocator, cfg: *const config.Config, state: ?
     report.memory_used_bytes = mem.used_bytes;
     report.swap_total_bytes = mem.swap_total_bytes;
     report.swap_used_bytes = mem.swap_used_bytes;
+
+    if (collectRootDisk()) |disk| {
+        report.disk_total_bytes = disk.total_bytes;
+        report.disk_used_bytes = disk.used_bytes;
+    } else |_| {}
+
+    if (readProcFile(allocator, "/proc/net/dev", 16 * 1024)) |net_raw| {
+        defer allocator.free(net_raw);
+        const network = parseNetworkDev(net_raw, report.collected_at_unix) catch null;
+        if (network) |current| {
+            report.network_total_down_bytes = current.rx_bytes;
+            report.network_total_up_bytes = current.tx_bytes;
+            if (state) |collector_state| {
+                if (collector_state.last_network) |previous| {
+                    const seconds = current.timestamp_unix - previous.timestamp_unix;
+                    if (seconds > 0) {
+                        const elapsed: u64 = @intCast(seconds);
+                        report.network_down_bytes_per_sec = bytesPerSecond(previous.rx_bytes, current.rx_bytes, elapsed);
+                        report.network_up_bytes_per_sec = bytesPerSecond(previous.tx_bytes, current.tx_bytes, elapsed);
+                    }
+                }
+                collector_state.last_network = current;
+            }
+        }
+    } else |_| {}
 
     return report;
 }
@@ -184,6 +227,92 @@ fn parseMemInfoValue(raw: []const u8) !u64 {
     return std.fmt.parseInt(u64, value, 10);
 }
 
+fn collectRootDisk() !DiskSnapshot {
+    if (builtin.os.tag != .linux or @sizeOf(usize) != 8) {
+        return .{ .total_bytes = 0, .used_bytes = 0 };
+    }
+
+    const linux = std.os.linux;
+    const Statfs = extern struct {
+        f_type: isize,
+        f_bsize: isize,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_fsid: [2]i32,
+        f_namelen: isize,
+        f_frsize: isize,
+        f_flags: isize,
+        f_spare: [4]isize,
+    };
+
+    var stats: Statfs = undefined;
+    const rc = linux.syscall2(.statfs, @intFromPtr("/"), @intFromPtr(&stats));
+    if (std.posix.errno(rc) != .SUCCESS) return error.StatfsFailed;
+
+    const block_size: u64 = @intCast(if (stats.f_frsize > 0) stats.f_frsize else stats.f_bsize);
+    const total = stats.f_blocks * block_size;
+    const free = stats.f_bfree * block_size;
+    return .{
+        .total_bytes = total,
+        .used_bytes = total - @min(total, free),
+    };
+}
+
+fn parseNetworkDev(raw: []const u8, timestamp_unix: i64) !NetworkSnapshot {
+    var snapshot = NetworkSnapshot{
+        .rx_bytes = 0,
+        .tx_bytes = 0,
+        .timestamp_unix = timestamp_unix,
+    };
+
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    _ = lines.next();
+    _ = lines.next();
+    var found = false;
+    while (lines.next()) |line| {
+        const current = try parseNetworkDevLine(line) orelse continue;
+        snapshot.rx_bytes += current.rx_bytes;
+        snapshot.tx_bytes += current.tx_bytes;
+        found = true;
+    }
+
+    if (!found) return error.InvalidNetworkDev;
+    return snapshot;
+}
+
+fn parseNetworkDevLine(line: []const u8) !?NetworkSnapshot {
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
+    const iface = std.mem.trim(u8, line[0..colon], " \t\r\n");
+    if (iface.len == 0 or std.mem.eql(u8, iface, "lo")) return null;
+
+    var parts = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t\r\n");
+    const rx_raw = parts.next() orelse return error.InvalidNetworkDev;
+    const rx = try std.fmt.parseInt(u64, rx_raw, 10);
+
+    var index: usize = 1;
+    var tx: ?u64 = null;
+    while (parts.next()) |part| : (index += 1) {
+        if (index == 8) {
+            tx = try std.fmt.parseInt(u64, part, 10);
+            break;
+        }
+    }
+
+    return .{
+        .rx_bytes = rx,
+        .tx_bytes = tx orelse return error.InvalidNetworkDev,
+        .timestamp_unix = 0,
+    };
+}
+
+fn bytesPerSecond(previous: u64, current: u64, elapsed_seconds: u64) u64 {
+    if (elapsed_seconds == 0 or current < previous) return 0;
+    return (current - previous) / elapsed_seconds;
+}
+
 test "parse loadavg uses total processes" {
     const parsed = try parseLoadAvg("0.15 0.20 0.22 1/233 12345\n");
     try std.testing.expectEqual(@as(u32, 233), parsed.process_count);
@@ -209,4 +338,19 @@ test "parse cpu stat computes percent" {
     const first = try parseCpuStat("cpu  100 0 50 850 0 0 0 0 0 0\n");
     const second = try parseCpuStat("cpu  150 0 70 880 0 0 0 0 0 0\n");
     try std.testing.expectApproxEqAbs(@as(f64, 70.0), calculateCpuPercent(first, second), 0.001);
+}
+
+test "parse network dev sums non loopback interfaces" {
+    const parsed = try parseNetworkDev(
+        \\Inter-|   Receive                                                |  Transmit
+        \\ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+        \\    lo:    1000       1    0    0    0     0          0         0     2000       1    0    0    0     0       0          0
+        \\  eth0:    3000       1    0    0    0     0          0         0     4000       1    0    0    0     0       0          0
+        \\ wlan0:    5000       1    0    0    0     0          0         0     6000       1    0    0    0     0       0          0
+        \\
+    , 123);
+
+    try std.testing.expectEqual(@as(u64, 8000), parsed.rx_bytes);
+    try std.testing.expectEqual(@as(u64, 10000), parsed.tx_bytes);
+    try std.testing.expectEqual(@as(i64, 123), parsed.timestamp_unix);
 }

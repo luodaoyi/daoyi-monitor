@@ -47,6 +47,18 @@ pub fn writeReport(writer: anytype, report: metrics.ReportMessage) !void {
     try writeNamedU64(writer, "swap_used", report.swap_used_bytes);
     try writer.writeAll(",");
     try writeNamedU32(writer, "process_count", report.process_count);
+    try writer.writeAll(",");
+    try writeNamedU64(writer, "disk_total", report.disk_total_bytes);
+    try writer.writeAll(",");
+    try writeNamedU64(writer, "disk_used", report.disk_used_bytes);
+    try writer.writeAll(",");
+    try writeNamedU64(writer, "network_up", report.network_up_bytes_per_sec);
+    try writer.writeAll(",");
+    try writeNamedU64(writer, "network_down", report.network_down_bytes_per_sec);
+    try writer.writeAll(",");
+    try writeNamedU64(writer, "network_total_up", report.network_total_up_bytes);
+    try writer.writeAll(",");
+    try writeNamedU64(writer, "network_total_down", report.network_total_down_bytes);
     try writer.writeAll("}}");
 }
 

@@ -938,6 +938,12 @@ button:disabled {
   gap: 12px;
 }
 
+.secret-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .secret-panel code {
   display: block;
   overflow-x: auto;
@@ -947,6 +953,11 @@ button:disabled {
   color: var(--accent-text);
   background: var(--accent-soft);
   white-space: nowrap;
+}
+
+.secret-panel code.install-command {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .table-card {

@@ -3,10 +3,12 @@ set -eu
 
 REPO="luodaoyi/daoyi-monitor"
 MANIFEST_URL=""
+INSTALLER_URL="https://raw.githubusercontent.com/luodaoyi/daoyi-monitor/main/install.sh"
 ENDPOINT=""
 TOKEN=""
 CHANNEL="stable"
 PROFILE="full"
+INTERVAL_SEC="3"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_FILE="/etc/daoyi-agent.env"
 
@@ -17,7 +19,9 @@ Usage:
 
 Options:
   --profile full|small|tiny
+  --interval SEC
   --manifest-url URL
+  --installer-url URL
   --install-dir DIR
   --config-file FILE
 EOF
@@ -43,6 +47,27 @@ download() {
   fi
   echo "curl or wget is required" >&2
   exit 1
+}
+
+verify_sha256() {
+  expected="$1"
+  file="$2"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$expected" "$file" | sha256sum -c -
+    return
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  elif command -v sha256 >/dev/null 2>&1; then
+    actual="$(sha256 -q "$file")"
+  else
+    echo "sha256sum, shasum, or sha256 is required" >&2
+    exit 1
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "sha256 mismatch: $file" >&2
+    exit 1
+  fi
 }
 
 as_root() {
@@ -109,13 +134,19 @@ while [ "$#" -gt 0 ]; do
     --token) TOKEN="${2:-}"; shift 2 ;;
     --channel) CHANNEL="${2:-stable}"; shift 2 ;;
     --profile) PROFILE="${2:-full}"; shift 2 ;;
+    --interval) INTERVAL_SEC="${2:-3}"; shift 2 ;;
     --manifest-url) MANIFEST_URL="${2:-}"; shift 2 ;;
+    --installer-url) INSTALLER_URL="${2:-}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:-}"; shift 2 ;;
     --config-file) CONFIG_FILE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+case "$INTERVAL_SEC" in
+  ''|*[!0-9]*) echo "--interval must be a positive integer" >&2; exit 1 ;;
+esac
 
 if [ -z "$ENDPOINT" ] || [ -z "$TOKEN" ]; then
   usage >&2
@@ -124,7 +155,6 @@ fi
 
 need_cmd awk
 need_cmd tar
-need_cmd sha256sum
 
 TARGET="$(detect_target)"
 ENDPOINT="$(normalize_endpoint "$ENDPOINT")"
@@ -145,7 +175,7 @@ fi
 
 ARCHIVE="$WORK_DIR/agent.tar.gz"
 download "$ARTIFACT_URL" "$ARCHIVE"
-printf '%s  %s\n' "$ARTIFACT_SHA" "$ARCHIVE" | sha256sum -c -
+verify_sha256 "$ARTIFACT_SHA" "$ARCHIVE"
 
 mkdir -p "$WORK_DIR/extract"
 tar -xzf "$ARCHIVE" -C "$WORK_DIR/extract"
@@ -161,8 +191,9 @@ as_root install -m 0755 "$BIN" "$INSTALL_DIR/daoyi-agent"
 as_root sh -c "cat > '$CONFIG_FILE'" <<EOF
 DAOYI_AGENT_ENDPOINT=$ENDPOINT
 DAOYI_AGENT_TOKEN=$TOKEN
-DAOYI_AGENT_INTERVAL_SEC=3
+DAOYI_AGENT_INTERVAL_SEC=$INTERVAL_SEC
 DAOYI_AGENT_UPDATE_MANIFEST_URL=$MANIFEST_URL
+DAOYI_AGENT_INSTALLER_URL=$INSTALLER_URL
 DAOYI_AGENT_CHANNEL=$CHANNEL
 DAOYI_AGENT_PROFILE=$PROFILE
 EOF
@@ -194,7 +225,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=$CONFIG_FILE
-ExecStart=/bin/sh -c 'url=https://raw.githubusercontent.com/luodaoyi/daoyi-monitor/main/install.sh; if command -v curl >/dev/null 2>&1; then curl -fsSL "\$url"; else wget -qO- "\$url"; fi | sh -s -- --endpoint "\$DAOYI_AGENT_ENDPOINT" --token "\$DAOYI_AGENT_TOKEN" --profile "\${DAOYI_AGENT_PROFILE:-full}" --manifest-url "\$DAOYI_AGENT_UPDATE_MANIFEST_URL" --install-dir "$INSTALL_DIR" --config-file "$CONFIG_FILE"'
+ExecStart=/bin/sh -c 'if command -v curl >/dev/null 2>&1; then curl -fsSL "\$DAOYI_AGENT_INSTALLER_URL"; else wget -qO- "\$DAOYI_AGENT_INSTALLER_URL"; fi | sh -s -- --endpoint "\$DAOYI_AGENT_ENDPOINT" --token "\$DAOYI_AGENT_TOKEN" --profile "\${DAOYI_AGENT_PROFILE:-full}" --interval "\${DAOYI_AGENT_INTERVAL_SEC:-3}" --manifest-url "\$DAOYI_AGENT_UPDATE_MANIFEST_URL" --installer-url "\$DAOYI_AGENT_INSTALLER_URL" --install-dir "$INSTALL_DIR" --config-file "$CONFIG_FILE"'
 EOF
   as_root sh -c "cat > /etc/systemd/system/daoyi-agent-update.timer" <<'EOF'
 [Unit]

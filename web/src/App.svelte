@@ -65,6 +65,7 @@
   let deleteSubmitting = false;
   let rotateTargetId = "";
   let copyingSecret = false;
+  let copyingInstallCommand = false;
   let revealedSecret: RevealedSecret | null = null;
   let notificationSaving = false;
   let notificationTesting = false;
@@ -445,8 +446,44 @@
     }
   }
 
+  async function copyInstallCommand(): Promise<void> {
+    if (!revealedSecret?.token) return;
+
+    copyingInstallCommand = true;
+
+    try {
+      await navigator.clipboard.writeText(buildInstallCommand(revealedSecret.token));
+      notice = { kind: "success", message: "安装命令已复制。" };
+    } catch {
+      notice = { kind: "error", message: "复制失败，请手动复制安装命令。" };
+    } finally {
+      copyingInstallCommand = false;
+    }
+  }
+
   function revealSecret(title: string, name: string, token: string): void {
     revealedSecret = { title, name, token };
+  }
+
+  function buildInstallCommand(token: string): string {
+    const origin = window.location.origin;
+    return [
+      "curl -fsSL",
+      `${origin}/install.sh`,
+      "| sh -s --",
+      "--endpoint",
+      shellQuote(origin),
+      "--token",
+      shellQuote(token),
+      "--profile full",
+      "--interval 3",
+      "--installer-url",
+      shellQuote(`${origin}/install.sh`)
+    ].join(" ");
+  }
+
+  function shellQuote(value: string): string {
+    return `'${value.replaceAll("'", "'\"'\"'")}'`;
   }
 
   function buildCreateAgentInput(): AgentCreateInput {
@@ -1130,12 +1167,20 @@
             <div>
               <span class="section-kicker">{revealedSecret.title}</span>
               <h2>{revealedSecret.name}</h2>
-              <p>此 token 只显示一次，请立即保存。</p>
+              <p>此 token 只显示一次。复制下面命令到服务器执行，即可安装并启动 Agent。</p>
             </div>
+            <span class="secret-label">Token</span>
             <code>{revealedSecret.token || "后端未返回明文 token"}</code>
+            {#if revealedSecret.token}
+              <span class="secret-label">一键安装命令</span>
+              <code class="install-command">{buildInstallCommand(revealedSecret.token)}</code>
+            {/if}
             <div class="button-row">
               <button class="btn primary" disabled={copyingSecret || !revealedSecret.token} on:click={() => void copySecret()}>
-                {copyingSecret ? "复制中..." : "复制"}
+                {copyingSecret ? "复制中..." : "复制 Token"}
+              </button>
+              <button class="btn primary" disabled={copyingInstallCommand || !revealedSecret.token} on:click={() => void copyInstallCommand()}>
+                {copyingInstallCommand ? "复制中..." : "复制安装命令"}
               </button>
               <button class="btn soft" on:click={() => (revealedSecret = null)}>关闭</button>
             </div>

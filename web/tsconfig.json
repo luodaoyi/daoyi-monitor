@@ -3,9 +3,11 @@
   "compilerOptions": {
     "allowJs": true,
     "checkJs": false,
+    "jsx": "react-jsx",
     "isolatedModules": true,
     "moduleResolution": "bundler",
+    "skipLibCheck": true,
     "strict": true
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

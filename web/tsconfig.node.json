@@ -3,6 +3,6 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ES2022",
-    "types": ["svelte"]
+    "types": ["vite/client"]
   }
 }

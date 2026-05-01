@@ -485,7 +485,7 @@ export default function App() {
         />
       )}
       {route === "/admin" && (
-        <Dashboard agents={visibleAgents} onlineCount={onlineCount} cpuAverage={cpuAverage} memoryAverage={memoryAverage} refresh={() => void loadAdminAgents()} navigate={navigate} />
+        <Dashboard agents={visibleAgents} onlineCount={onlineCount} cpuAverage={cpuAverage} memoryAverage={memoryAverage} refresh={() => void loadAdminAgents()} />
       )}
       {route === "/admin/agents" && (
         <AgentsPage
@@ -901,7 +901,7 @@ function AdminShell({ route, navigate, user, onLogout, children }: { route: Rout
   );
 }
 
-function Dashboard({ agents, onlineCount, cpuAverage, memoryAverage, refresh, navigate }: { agents: AgentRecord[]; onlineCount: number; cpuAverage: number | null; memoryAverage: number | null; refresh: () => void; navigate: (route: string) => void }) {
+function Dashboard({ agents, onlineCount, cpuAverage, memoryAverage, refresh }: { agents: AgentRecord[]; onlineCount: number; cpuAverage: number | null; memoryAverage: number | null; refresh: () => void }) {
   return (
     <div className="space-y-4">
       <Card>
@@ -916,9 +916,6 @@ function Dashboard({ agents, onlineCount, cpuAverage, memoryAverage, refresh, na
           <TopCard title="平均内存" value={formatPercent(memoryAverage)} />
         </div>
       </Card>
-      <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
-        {agents.slice(0, 8).map((agent) => <NodeCard key={agent.id} agent={agent} navigate={navigate} />)}
-      </div>
     </div>
   );
 }
